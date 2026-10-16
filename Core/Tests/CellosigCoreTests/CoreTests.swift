@@ -48,7 +48,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(PhoneNumbers.normalize("07911 123456", countryCode: "44"), "+447911123456")
         XCTAssertNil(PhoneNumbers.normalize("12345", countryCode: "1"))
         XCTAssertEqual(PhoneNumbers.pretty("+15551234567"), "+1 555-123-4567")
-        XCTAssertEqual(PhoneNumbers.mask("+15552340049"), "+1•••••••49")
+        XCTAssertEqual(PhoneNumbers.mask("+15552340049"), "+1••••••••49")
     }
 
     func testProfileNames() {
