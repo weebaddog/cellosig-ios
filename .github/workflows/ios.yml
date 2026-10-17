@@ -77,6 +77,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" Payload/Cellosig.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" Payload/Cellosig.app/Info.plist
           /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" Payload/Cellosig.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :CellosigKeepAlive bool true" Payload/Cellosig.app/Info.plist
           zip -qry cellosig-sideload.ipa Payload
           ls -l cellosig-sideload.ipa
       - uses: actions/upload-artifact@v4

@@ -68,6 +68,13 @@ struct SettingsView: View {
                     Toggle("Send read receipts", isOn: Binding(get: { m.readReceipts }, set: { m.readReceipts = $0 }))
                     Toggle("Show sender and message in notifications", isOn: $notifyPreview)
                 }
+                if KeepAlive.available {
+                    Section {
+                        Toggle("Stay connected in the background", isOn: Binding(get: { KeepAlive.shared.enabled }, set: { KeepAlive.shared.enabled = $0; m.touch() }))
+                    } footer: {
+                        Text("This copy of cellosig was installed without Apple's push service, so it only receives while it's running. On: it keeps running (by playing silence) so messages notify and calls ring — uses more battery. Swiping it away in the app switcher still stops it.")
+                    }
+                }
                 Section {
                     Toggle("Lock with Face ID or passcode", isOn: Binding(get: { model.lockEnabled }, set: { on in
                         Task { if !(await model.setLock(on)) { lockError = true } }

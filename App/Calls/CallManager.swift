@@ -300,6 +300,7 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     private func configureAudioSession() {
+        KeepAlive.shared.stop()   // the call owns the audio session now
         let rtc = RTCAudioSession.sharedInstance()
         rtc.lockForConfiguration()
         try? rtc.setConfiguration(RTCAudioSessionConfiguration.webRTC())
@@ -518,6 +519,7 @@ extension CallManager: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         RTCAudioSession.sharedInstance().audioSessionDidDeactivate(audioSession)
         RTCAudioSession.sharedInstance().isAudioEnabled = false
+        Task { @MainActor in KeepAlive.shared.start() }   // sideloaded builds: stay reachable after the call
     }
 }
 

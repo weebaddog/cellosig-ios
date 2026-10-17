@@ -108,6 +108,7 @@ final class AppModel: ObservableObject {
             m.start()
             messenger = m
             CallManager.shared.registerForVoIP()
+            KeepAlive.shared.start()
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
                 if granted { Task { @MainActor in UIApplication.shared.registerForRemoteNotifications() } }
             }
@@ -126,10 +127,23 @@ final class AppModel: ObservableObject {
         messenger = nil
     }
 
+    /// The chat that was open when the app went to the background.
+    private var chatOnScreen: String?
+
     func phaseChanged(_ p: ScenePhase) {
         obscured = p != .active
-        if p == .active { messenger?.foregrounded() }
+        if p == .active {
+            messenger?.foregrounded()
+            if let conv = chatOnScreen, let m = messenger, m.activeChat == nil {
+                m.activeChat = conv
+                Task { await m.markRead(conv) }
+            }
+            chatOnScreen = nil
+        }
         if p == .background {
+            // Still running (sideloaded keep-alive, or a call): nobody is looking, so
+            // new messages in the open chat notify and stay unread.
+            if let conv = messenger?.activeChat { chatOnScreen = conv; messenger?.activeChat = nil }
             promptedThisVisit = false
             if lockEnabled && messenger != nil { locked = true }
         }

@@ -101,6 +101,7 @@ final class VoiceRecorder: NSObject, ObservableObject {
 
     func start() async -> Bool {
         guard !recording, !CallManager.shared.inCall, await AVAudioApplication.requestRecordPermission() else { return false }
+        KeepAlive.shared.stop()
         let s = AVAudioSession.sharedInstance()
         do {
             try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
@@ -145,6 +146,7 @@ final class VoiceRecorder: NSObject, ObservableObject {
         started = nil
         recording = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        KeepAlive.shared.start()
     }
 }
 
@@ -184,6 +186,7 @@ final class VoicePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             player = p
             duration = p.duration
         }
+        KeepAlive.shared.stop()
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
         try? AVAudioSession.sharedInstance().setActive(true)
         player?.play()
@@ -204,6 +207,7 @@ final class VoicePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.playing = false
             self.progress = 0
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            KeepAlive.shared.start()
         }
     }
 }
