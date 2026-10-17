@@ -86,7 +86,11 @@ final class AppModel: ObservableObject {
 
     var lockEnabled: Bool {
         get { Shared.defaults.bool(forKey: "app_lock") }
-        set { Shared.defaults.set(newValue, forKey: "app_lock"); objectWillChange.send() }
+        set {
+            Shared.defaults.set(newValue, forKey: "app_lock")
+            objectWillChange.send()
+            ExtensionBridge.shared.writeSnapshots()   // the widget hides chats while the lock is on
+        }
     }
 
     static let defaultRelay = "wss://theoretical-grades-rising-louis.trycloudflare.com"
@@ -107,6 +111,7 @@ final class AppModel: ObservableObject {
             m.onCallSignal = { from, sig, ts in CallManager.shared.onSignal(from, sig, ts) }
             m.start()
             messenger = m
+            ExtensionBridge.shared.attach(m)
             CallManager.shared.registerForVoIP()
             KeepAlive.shared.start()
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
@@ -120,11 +125,13 @@ final class AppModel: ObservableObject {
     func signedOut() {
         messenger?.stop()
         messenger = nil
+        ExtensionBridge.shared.detach()
         Account.clear()
     }
 
     func erased() {
         messenger = nil
+        ExtensionBridge.shared.detach()
     }
 
     /// The chat that was open when the app went to the background.
@@ -134,6 +141,7 @@ final class AppModel: ObservableObject {
         obscured = p != .active
         if p == .active {
             messenger?.foregrounded()
+            ExtensionBridge.shared.processInbox()
             if let conv = chatOnScreen, let m = messenger, m.activeChat == nil {
                 m.activeChat = conv
                 Task { await m.markRead(conv) }
@@ -193,6 +201,9 @@ final class AppModel: ObservableObject {
 struct RootView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject private var calls = CallManager.shared
+    @AppStorage("theme", store: Shared.defaults) private var theme = "system"
+    @AppStorage("accent", store: Shared.defaults) private var accent = "blue"
+    @AppStorage("notify_preview", store: Shared.defaults) private var notifyPreview = false
 
     var body: some View {
         ZStack {
@@ -213,6 +224,12 @@ struct RootView: View {
         .alert("cellosig", isPresented: .constant(model.startupError != nil)) {
             Button("OK") { model.startupError = nil }
         } message: { Text(model.startupError ?? "") }
+        .tint(Appearance.accent(accent))
+        .preferredColorScheme(Appearance.scheme(theme))
+        // A chat tapped in the widget.
+        .onOpenURL { url in if let conv = AppLinks.conversation(from: url) { model.openConversation = conv } }
+        // The widget shows message previews only while they're allowed.
+        .onChange(of: notifyPreview) { _ in ExtensionBridge.shared.writeSnapshots() }
     }
 }
 

@@ -56,6 +56,20 @@ final class Database {
             PRAGMA user_version = 2;
             """)
         }
+        if version < 3 {
+            // Edited / deleted-for-everyone messages (same columns as the Android client).
+            try exec("""
+            ALTER TABLE messages ADD COLUMN editedAt INTEGER;
+            ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 3;
+            """)
+        }
+        // The data folder just moved into the App Group: files stored by full path moved with it.
+        if let moved = Paths.movedFrom {
+            let (old, new) = moved
+            try run("UPDATE messages SET filePath = ? || substr(filePath, length(?) + 1) WHERE substr(filePath, 1, length(?)) = ?", new, old, old, old)
+            try run("UPDATE profiles SET photo = ? || substr(photo, length(?) + 1) WHERE substr(photo, 1, length(?)) = ?", new, old, old, old)
+        }
     }
 
     // MARK: Primitives

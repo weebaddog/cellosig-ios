@@ -68,6 +68,14 @@ struct SettingsView: View {
                     Toggle("Send read receipts", isOn: Binding(get: { m.readReceipts }, set: { m.readReceipts = $0 }))
                     Toggle("Show sender and message in notifications", isOn: $notifyPreview)
                 }
+                AppearanceSection()
+                if AppGroup.container == nil {
+                    Section {
+                        Label("Widget and Share to cellosig are off in this install", systemImage: "square.and.arrow.up.trianglebadge.exclamationmark")
+                    } footer: {
+                        Text("They need an App Group, which this copy of cellosig was installed without (the signing tool didn't add one).")
+                    }
+                }
                 if KeepAlive.available {
                     Section {
                         Toggle("Stay connected in the background", isOn: Binding(get: { KeepAlive.shared.enabled }, set: { KeepAlive.shared.enabled = $0; m.touch() }))

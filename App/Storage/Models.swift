@@ -21,6 +21,8 @@ struct Message: Identifiable, Equatable {
     var pollJson: String?
     var expiresInSec: Int
     var expiresAt: Int64?
+    var editedAt: Int64?
+    var deleted: Bool
 
     var isSystem: Bool { msgId.hasPrefix(Messenger.systemPrefix) }
     var isImage: Bool { fileMime?.hasPrefix("image/") == true }
@@ -41,6 +43,8 @@ struct Message: Identifiable, Equatable {
         pollJson = r.str("pollJson")
         expiresInSec = Int(r.int("expiresInSec") ?? 0)
         expiresAt = r.int("expiresAt")
+        editedAt = r.int("editedAt")
+        deleted = r.bool("deleted")
     }
 }
 

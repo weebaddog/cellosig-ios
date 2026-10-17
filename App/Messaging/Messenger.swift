@@ -533,7 +533,7 @@ final class Messenger: ObservableObject {
 
     func retryUnsent() async {
         let rows = (try? db.query("""
-            SELECT * FROM messages WHERE outgoing = 1 AND status IN ('sending','failed') AND ts < ? AND ts > ? AND msgId != ''
+            SELECT * FROM messages WHERE outgoing = 1 AND status IN ('sending','failed') AND ts < ? AND ts > ? AND msgId != '' AND deleted = 0
             """, nowMs() - 30_000, nowMs() - Self.autoRetryWindowMs)) ?? []
         for r in rows { await resend(Message(row: r)) }
     }
@@ -541,7 +541,7 @@ final class Messenger: ObservableObject {
     func retry(_ m: Message) async { await resend(m) }
 
     private func resend(_ m: Message) async {
-        guard !m.msgId.isEmpty, !m.isSystem, !inFlight.contains(m.id) else { return }
+        guard !m.msgId.isEmpty, !m.isSystem, !m.deleted, !inFlight.contains(m.id) else { return }
         inFlight.insert(m.id)
         defer { inFlight.remove(m.id) }
         let confirmed = m.status == "delivered" || m.status == "read"
@@ -587,10 +587,10 @@ final class Messenger: ObservableObject {
             return
         }
         let since = nowMs() - Self.resendWindowMs
-        let direct = (try? db.query("SELECT * FROM messages WHERE conv = ? AND outgoing = 1 AND ts > ? AND status NOT IN ('delivered','read') AND msgId != '' AND msgId NOT LIKE 'sys:%'", peer, since)) ?? []
+        let direct = (try? db.query("SELECT * FROM messages WHERE conv = ? AND outgoing = 1 AND ts > ? AND status NOT IN ('delivered','read') AND msgId != '' AND msgId NOT LIKE 'sys:%' AND deleted = 0", peer, since)) ?? []
         for r in direct { await resend(Message(row: r)) }
         for g in allGroups() where g.members.contains(peer) {
-            let rows = (try? db.query("SELECT * FROM messages WHERE conv = ? AND outgoing = 1 AND ts > ? AND msgId != ''", Self.groupPrefix + g.id, since)) ?? []
+            let rows = (try? db.query("SELECT * FROM messages WHERE conv = ? AND outgoing = 1 AND ts > ? AND msgId != '' AND deleted = 0", Self.groupPrefix + g.id, since)) ?? []
             for r in rows {
                 let m = Message(row: r)
                 if (try? db.scalarInt("SELECT 1 FROM receipts WHERE msgId = ? AND member = ?", m.msgId, peer)) != nil { continue }
@@ -701,6 +701,8 @@ final class Messenger: ObservableObject {
         case "receipt": onReceipt(from, p)
         case "reaction": onReaction(from, p)
         case "vote": onVote(from, p)
+        case "edit": onEdit(from, p)
+        case "unsend": onUnsend(from, p)
         case "reset": Task { await resendUndelivered(to: from) }
         case "group": if let g = p.group { onGroupAnnouncement(from, g) }
         case "profile": if let pr = p.profile { onProfile(from, pr) }
@@ -819,6 +821,102 @@ final class Messenger: ObservableObject {
         if !poll.multi { valid = Array(valid.prefix(1)) }
         try? db.run("INSERT OR REPLACE INTO votes(msgId, member, choices) VALUES(?, ?, ?)", msg.msgId, from, valid.map(String.init).joined(separator: ","))
         touch()
+    }
+
+    // MARK: - Edit / delete for everyone
+
+    /// How long after sending you can still edit or delete a message for everyone (same on Android).
+    static let editWindowMs: Int64 = 24 * 3600_000
+    private static let maxEditChars = 64_000
+
+    func canUnsend(_ msg: Message) -> Bool {
+        msg.outgoing && !msg.deleted && !msg.msgId.isEmpty && !msg.isSystem && nowMs() - msg.ts < Self.editWindowMs
+    }
+
+    /// Text messages only (not files or polls).
+    func canEdit(_ msg: Message) -> Bool { canUnsend(msg) && msg.fileMime == nil && msg.pollJson == nil }
+
+    /// Change the text of a message you sent; everyone in the chat sees the new text, marked edited.
+    func editMessage(_ msg: Message, _ text: String) async {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canEdit(msg), !body.isEmpty, body != msg.body else { return }
+        try? db.run("UPDATE messages SET body = ?, editedAt = ? WHERE id = ?", body, nowMs(), msg.id)
+        refreshPreview(msg.conv, msg.id)
+        let p = Payload(t: "edit", body: body, group: groupRef(msg.conv), target: msg.msgId)
+        for r in recipients(msg.conv) { _ = try? await sendPayload(r, p, relayId: nil) }
+    }
+
+    /// Delete a message you sent for everyone in the chat.
+    func unsend(_ msg: Message) async {
+        guard canUnsend(msg) else { return }
+        takeBack(msg)
+        let p = Payload(t: "unsend", group: groupRef(msg.conv), target: msg.msgId)
+        for r in recipients(msg.conv) { _ = try? await sendPayload(r, p, relayId: nil) }
+    }
+
+    /// The message `p` points at, if `from` sent it to us in that chat recently enough to change it.
+    private func theirChangeable(_ from: String, _ p: Payload) -> Message? {
+        guard let conv = conversationFor(from, p.group), let t = p.target, let msg = messageIn(conv, t) else { return nil }
+        // Only whoever wrote it may change it (in a group: that member, not anyone in it).
+        guard !msg.outgoing, !msg.deleted, (msg.sender ?? conv) == from else { return nil }
+        // Some slack over the sender's own limit, for clocks and delivery delays.
+        return nowMs() - msg.ts < Self.editWindowMs * 2 ? msg : nil
+    }
+
+    private func onEdit(_ from: String, _ p: Payload) {
+        guard let msg = theirChangeable(from, p), msg.fileMime == nil, msg.pollJson == nil,
+              let body = p.body.map({ String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxEditChars)) }), !body.isEmpty
+        else { return }
+        try? db.run("UPDATE messages SET body = ?, editedAt = ? WHERE id = ?", body, nowMs(), msg.id)
+        refreshPreview(msg.conv, msg.id)
+    }
+
+    private func onUnsend(_ from: String, _ p: Payload) {
+        guard let msg = theirChangeable(from, p) else { return }
+        takeBack(msg)
+    }
+
+    /// The words and the attachment go; the row stays as a "deleted" placeholder.
+    private func takeBack(_ msg: Message) {
+        if let path = msg.filePath { try? FileManager.default.removeItem(atPath: path) }
+        try? db.run("""
+            UPDATE messages SET deleted = 1, body = '', fileName = NULL, fileMime = NULL, fileSize = NULL, filePath = NULL,
+              fileKey = NULL, fileBlob = NULL, fileState = NULL, fileKind = NULL, pollJson = NULL WHERE id = ?
+            """, msg.id)
+        try? db.run("DELETE FROM reactions WHERE msgId = ?", msg.msgId)
+        try? db.run("DELETE FROM votes WHERE msgId = ?", msg.msgId)
+        for r in reminders(conv: msg.conv) where r.msgRow == msg.id { cancelReminder(r.id) }
+        refreshPreview(msg.conv, msg.id)
+    }
+
+    /// The chat list shows the latest message: if that's the one that changed, show it as it is now.
+    private func refreshPreview(_ conv: String, _ row: Int64) {
+        guard let r = try? db.query("SELECT * FROM messages WHERE conv = ? ORDER BY ts DESC, id DESC LIMIT 1", conv).first else { return }
+        let latest = Message(row: r)
+        guard latest.id == row else { touch(); return }
+        let text = latest.deleted ? "🚫 Message deleted" : latest.expiresInSec > 0 ? "⏱ Disappearing message" : latest.body
+        try? db.run("UPDATE conversations SET lastText = ? WHERE id = ?", text, conv)
+        touch()
+    }
+
+    // MARK: - Search
+
+    struct SearchHit: Identifiable {
+        var msg: Message
+        var id: Int64 { msg.id }
+    }
+
+    /// Messages containing `query` (newest first), in your chats (not requests).
+    func search(_ query: String, limit: Int = 100) -> [SearchHit] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+        let rows = (try? db.query("""
+            SELECT * FROM messages WHERE body LIKE ? ESCAPE '\\' AND msgId NOT LIKE 'sys:%' AND deleted = 0
+              AND conv IN (SELECT id FROM conversations WHERE request = 0)
+            ORDER BY ts DESC LIMIT ?
+            """, "%" + escaped + "%", limit)) ?? []
+        return rows.map { SearchHit(msg: Message(row: $0)) }
     }
 
     private func onProfile(_ from: String, _ pr: ProfileDto) {
@@ -1112,6 +1210,18 @@ final class Messenger: ObservableObject {
         case ..<86_400: return plural(s / 3600, "hour")
         case ..<(7 * 86_400): return plural(s / 86_400, "day")
         default: return plural(s / (7 * 86_400), "week")
+        }
+    }
+
+    /// "30s", "5m", "8h", "1d", "1w" (the chat header).
+    static func timerShort(_ s: Int) -> String {
+        switch s {
+        case ...0: return ""
+        case ..<60: return "\(s)s"
+        case ..<3600: return "\(s / 60)m"
+        case ..<86_400: return "\(s / 3600)h"
+        case ..<(7 * 86_400): return "\(s / 86_400)d"
+        default: return "\(s / (7 * 86_400))w"
         }
     }
 

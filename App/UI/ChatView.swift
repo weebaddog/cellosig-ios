@@ -7,6 +7,12 @@ struct ChatView: View {
     @EnvironmentObject var m: Messenger
     @Environment(\.dismiss) private var dismiss
     let conv: String
+    /// Open scrolled to this message (from search), briefly highlighted.
+    var focus: Int64? = nil
+    @State private var highlight: Int64?
+    @State private var editing: Message?
+    @State private var editText = ""
+    @State private var unsending: Message?
     @State private var draft = ""
     @State private var photo: PhotosPickerItem?
     @State private var showFiles = false
@@ -32,13 +38,24 @@ struct ChatView: View {
                     LazyVStack(spacing: 6) {
                         let reminders = Dictionary(grouping: m.reminders(conv: conv), by: { $0.msgRow ?? -1 })
                         ForEach(msgs) { msg in
-                            MessageRow(msg: msg, conv: conv, share: $share, remind: $remind, reminders: reminders[msg.id] ?? []).id(msg.id)
+                            MessageRow(msg: msg, conv: conv, share: $share, remind: $remind, reminders: reminders[msg.id] ?? [],
+                                       highlighted: highlight == msg.id,
+                                       edit: { editText = $0.body; editing = $0 }, unsend: { unsending = $0 }).id(msg.id)
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 8)
                 }
+                .background(ChatWallpaper().ignoresSafeArea(edges: .bottom))
                 .scrollDismissesKeyboard(.interactively)
-                .onAppear { proxy.scrollTo(msgs.last?.id, anchor: .bottom) }
+                .onAppear {
+                    if let focus, msgs.contains(where: { $0.id == focus }) {
+                        proxy.scrollTo(focus, anchor: .center)
+                        highlight = focus
+                        Task { try? await Task.sleep(nanoseconds: 2_000_000_000); withAnimation { highlight = nil } }
+                    } else {
+                        proxy.scrollTo(msgs.last?.id, anchor: .bottom)
+                    }
+                }
                 .onChange(of: msgs.count) { _ in withAnimation { proxy.scrollTo(msgs.last?.id, anchor: .bottom) } }
             }
             if c?.request == true {
@@ -58,6 +75,30 @@ struct ChatView: View {
                 }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if c?.request != true {
+                    // Disappearing messages, right in the header: shows the timer when it's on.
+                    Menu {
+                        Section("Disappearing messages") {
+                            ForEach(Messenger.timerChoices, id: \.self) { s in
+                                Button { Task { await m.setTimer(conv, seconds: s) } } label: {
+                                    if (c?.timerSec ?? 0) == s { Label(Messenger.timerLabel(s).capitalized, systemImage: "checkmark") }
+                                    else { Text(Messenger.timerLabel(s).capitalized) }
+                                }
+                            }
+                        }
+                    } label: {
+                        let t = c?.timerSec ?? 0
+                        if t > 0 {
+                            HStack(spacing: 2) {
+                                Image(systemName: "timer")
+                                Text(Messenger.timerShort(t)).font(.caption.bold()).monospacedDigit()
+                            }
+                        } else {
+                            Image(systemName: "timer").foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityLabel("Disappearing messages: \(Messenger.timerLabel(c?.timerSec ?? 0))")
+                }
                 if !isGroup && c?.request != true {
                     Button {
                         guard guardTrust() else { return }
@@ -72,14 +113,6 @@ struct ChatView: View {
                     }
                 }
                 Menu {
-                    Menu("Disappearing messages") {
-                        ForEach(Messenger.timerChoices, id: \.self) { s in
-                            Button { Task { await m.setTimer(conv, seconds: s) } } label: {
-                                if (c?.timerSec ?? 0) == s { Label(Messenger.timerLabel(s).capitalized, systemImage: "checkmark") }
-                                else { Text(Messenger.timerLabel(s).capitalized) }
-                            }
-                        }
-                    }
                     if !isGroup {
                         Button(role: .destructive) { m.block(conv); dismiss() } label: { Label("Block", systemImage: "hand.raised") }
                     }
@@ -114,6 +147,21 @@ struct ChatView: View {
             }
         }
         .alert("cellosig", isPresented: .constant(error != nil)) { Button("OK") { error = nil } } message: { Text(error ?? "") }
+        .alert("Edit message", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+            TextField("Message", text: $editText, axis: .vertical).autocorrectionDisabled()
+            Button("Cancel", role: .cancel) { editing = nil }
+            Button("Save") {
+                if let msg = editing, guardTrust() { Task { await m.editMessage(msg, editText) } }
+                editing = nil
+            }
+        } message: { Text("Everyone in this chat sees the new text, marked “edited”.") }
+        .confirmationDialog("Delete for everyone?", isPresented: Binding(get: { unsending != nil }, set: { if !$0 { unsending = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete for everyone", role: .destructive) {
+                if let msg = unsending { Task { await m.unsend(msg) } }
+                unsending = nil
+            }
+        } message: { Text("The message is removed from everyone's phone in this chat. They see that a message was deleted.") }
         .onAppear { m.activeChat = conv; Task { await m.markRead(conv) } }
         .onDisappear { if m.activeChat == conv { m.activeChat = nil } }
         .onChange(of: msgs.count) { _ in Task { await m.markRead(conv) } }
@@ -240,13 +288,18 @@ struct MessageRow: View {
     @Binding var share: URL?
     @Binding var remind: Message?
     let reminders: [Reminder]
+    var highlighted = false
+    var edit: (Message) -> Void = { _ in }
+    var unsend: (Message) -> Void = { _ in }
 
     private var isSticker: Bool { msg.fileKind == "sticker" && msg.fileState == "ready" }
 
     var body: some View {
         if msg.isSystem {
             Text(msg.body).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                .padding(8).frame(maxWidth: .infinity)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(4).frame(maxWidth: .infinity)
         } else {
             HStack {
                 if msg.outgoing { Spacer(minLength: 50) }
@@ -255,7 +308,8 @@ struct MessageRow: View {
                         Text(m.displayName(s)).font(.caption2.bold()).foregroundStyle(.secondary)
                     }
                     bubble
-                        .contextMenu { menu }
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.yellow, lineWidth: highlighted ? 3 : 0))
+                        .contextMenu { if !msg.deleted { menu } }
                     ForEach(reminders) { r in
                         Button { m.cancelReminder(r.id) } label: {
                             Label(TimeParser.label(r.at), systemImage: "alarm").font(.caption2)
@@ -287,7 +341,10 @@ struct MessageRow: View {
 
     private var bubbleBox: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let poll = msg.poll {
+            if msg.deleted {
+                Label(msg.outgoing ? "You deleted this message" : "This message was deleted", systemImage: "nosign")
+                    .italic().opacity(0.8)
+            } else if let poll = msg.poll {
                 PollView(msg: msg, poll: poll, conv: conv)
             } else if msg.fileMime != nil {
                 attachment
@@ -298,7 +355,7 @@ struct MessageRow: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .foregroundStyle(msg.outgoing ? Color.white : Color.primary)
-        .background(RoundedRectangle(cornerRadius: 16).fill(msg.outgoing ? Color.blue : Color(.secondarySystemBackground)))
+        .background(RoundedRectangle(cornerRadius: 16).fill(msg.outgoing ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemBackground))))
     }
 
     @ViewBuilder private var attachment: some View {
@@ -339,6 +396,7 @@ struct MessageRow: View {
     private var footer: some View {
         HStack(spacing: 4) {
             if msg.expiresInSec > 0 { Image(systemName: "timer") }
+            if msg.editedAt != nil && !msg.deleted { Text("edited ·") }
             Text(Date(timeIntervalSince1970: Double(msg.ts) / 1000).formatted(date: .omitted, time: .shortened))
             if msg.outgoing {
                 switch msg.status {
@@ -366,6 +424,12 @@ struct MessageRow: View {
         }
         Button { remind = msg } label: {
             Label(TimeParser.find(msg.body).map { "Remind me \($0.label)" } ?? "Remind me…", systemImage: "alarm")
+        }
+        if m.canEdit(msg) {
+            Button { edit(msg) } label: { Label("Edit", systemImage: "pencil") }
+        }
+        if m.canUnsend(msg) {
+            Button(role: .destructive) { unsend(msg) } label: { Label("Delete for everyone", systemImage: "trash") }
         }
     }
 }

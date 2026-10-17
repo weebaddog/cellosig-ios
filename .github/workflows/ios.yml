@@ -69,21 +69,54 @@ jobs:
             -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CELLOSIG_BUNDLE_ID=com.cellosig.sideload \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" build | tail -n 50
-      - name: Package IPA
+      - name: Package IPAs
         run: |
-          mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/Cellosig.app Payload/
-          rm -rf Payload/Cellosig.app/PlugIns
-          /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" Payload/Cellosig.app/Info.plist || true
-          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" Payload/Cellosig.app/Info.plist
-          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" Payload/Cellosig.app/Info.plist
-          /usr/libexec/PlistBuddy -c "Add :CellosigKeepAlive bool true" Payload/Cellosig.app/Info.plist
-          zip -qry cellosig-sideload.ipa Payload
-          ls -l cellosig-sideload.ipa
+          set -e
+          APP=build/Build/Products/Release-iphoneos/Cellosig.app
+          # No push for free accounts: keep-alive instead, and no notification extension.
+          sideload_plist() {
+            /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" "$1" || true
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$1"
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" "$1"
+            /usr/libexec/PlistBuddy -c "Add :CellosigKeepAlive bool true" "$1"
+          }
+
+          # 1) Plain: no extensions at all (installs with any free Apple ID).
+          mkdir -p plain/Payload
+          cp -R "$APP" plain/Payload/
+          rm -rf plain/Payload/Cellosig.app/PlugIns
+          sideload_plist plain/Payload/Cellosig.app/Info.plist
+          (cd plain && zip -qry ../cellosig-sideload.ipa Payload)
+
+          # 2) With the widget and Share to cellosig. Those need an App Group, so
+          #    the bundles carry it as an entitlement (ad-hoc signature) for the
+          #    signing tool to register. Its own group name: the real one stays
+          #    free for the paid team. (Uses 3 of a free account's 3 app slots.)
+          mkdir -p full/Payload
+          cp -R "$APP" full/Payload/
+          A=full/Payload/Cellosig.app
+          rm -rf "$A/PlugIns/CellosigNotify.appex"
+          sideload_plist "$A/Info.plist"
+          cat > group.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>com.apple.security.application-groups</key>
+            <array><string>group.com.cellosig.sideload</string></array>
+          </dict></plist>
+          EOF
+          for f in "$A"/Frameworks/*; do if [ -e "$f" ]; then codesign -f -s - "$f"; fi; done
+          for x in "$A"/PlugIns/*.appex; do codesign -f -s - --entitlements group.plist "$x"; done
+          codesign -f -s - --entitlements group.plist "$A"
+          codesign -d --entitlements - "$A/PlugIns/CellosigWidget.appex"
+          (cd full && zip -qry ../cellosig-sideload-widgets.ipa Payload)
+          ls -l *.ipa
       - uses: actions/upload-artifact@v4
         with:
           name: cellosig-sideload
-          path: cellosig-sideload.ipa
+          path: |
+            cellosig-sideload.ipa
+            cellosig-sideload-widgets.ipa
           retention-days: 30
 
   testflight:

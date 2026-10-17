@@ -1,19 +1,54 @@
 import CellosigCore
 import SwiftUI
 
+/// A chat to open, optionally at one message (from search).
+struct ChatRoute: Hashable {
+    var conv: String
+    var focus: Int64?
+}
+
 struct ChatListView: View {
     @EnvironmentObject var m: Messenger
     @EnvironmentObject var model: AppModel
-    @State private var path: [String] = []
+    @State private var path: [ChatRoute] = []
     @State private var showNew = false
     @State private var showSettings = false
+    @State private var query = ""
 
     var body: some View {
         let _ = m.revision
         let convs = m.conversations()
         let requests = m.conversations(requests: true)
         NavigationStack(path: $path) {
-            List {
+            Group {
+                if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    chatList(convs, requests)
+                } else {
+                    SearchResults(query: query, convs: convs, path: $path)
+                }
+            }
+            .searchable(text: $query, prompt: "Search chats and messages")
+            .navigationTitle("cellosig")
+            .navigationDestination(for: ChatRoute.self) { ChatView(conv: $0.conv, focus: $0.focus) }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showNew = true } label: { Image(systemName: "square.and.pencil") }
+                }
+            }
+            .sheet(isPresented: $showNew) {
+                NewChatView { conv in showNew = false; path = [ChatRoute(conv: conv)] }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
+            .onAppear(perform: openTapped)
+            .onChange(of: model.openConversation) { _ in openTapped() }
+        }
+    }
+
+    private func chatList(_ convs: [Conversation], _ requests: [Conversation]) -> some View {
+        List {
                 if !m.connected {
                     Label("Connecting to relay…", systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.orange)
                 }
@@ -27,7 +62,7 @@ struct ChatListView: View {
                     }
                 }
                 ForEach(convs) { c in
-                    NavigationLink(value: c.id) { ConversationRow(c: c) }
+                    NavigationLink(value: ChatRoute(conv: c.id)) { ConversationRow(c: c) }
                         .swipeActions {
                             Button(role: .destructive) { m.deleteConversation(c.id) } label: { Label("Delete", systemImage: "trash") }
                             Button { m.setPinned(c.id, c.pinnedAt == nil) } label: {
@@ -38,34 +73,83 @@ struct ChatListView: View {
                 if convs.isEmpty && requests.isEmpty {
                     Text("No chats yet. Tap ✏️ to message someone.").foregroundStyle(.secondary)
                 }
-            }
-            .listStyle(.plain)
-            .navigationTitle("cellosig")
-            .navigationDestination(for: String.self) { ChatView(conv: $0) }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showNew = true } label: { Image(systemName: "square.and.pencil") }
-                }
-            }
-            .sheet(isPresented: $showNew) {
-                NewChatView { conv in showNew = false; path = [conv] }
-            }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .onAppear(perform: openTapped)
-            .onChange(of: model.openConversation) { _ in openTapped() }
         }
+        .listStyle(.plain)
     }
 
-    /// A notification was tapped: show that chat.
+    /// A notification, widget or share was tapped: show that chat.
     private func openTapped() {
         guard let conv = model.openConversation else { return }
         model.openConversation = nil
+        guard m.conversation(conv) != nil else { return }
         showNew = false
         showSettings = false
-        path = [conv]
+        query = ""
+        path = [ChatRoute(conv: conv)]
+    }
+}
+
+/// Chats whose name matches, then messages containing the words.
+struct SearchResults: View {
+    @EnvironmentObject var m: Messenger
+    let query: String
+    let convs: [Conversation]
+    @Binding var path: [ChatRoute]
+
+    var body: some View {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let digits = q.filter(\.isNumber)
+        let chats = convs.filter { m.title($0.id).localizedCaseInsensitiveContains(q) || (digits.count >= 3 && $0.id.contains(digits)) }
+        let hits = m.search(q)
+        List {
+            if !chats.isEmpty {
+                Section("Chats") {
+                    ForEach(chats) { c in
+                        Button { path.append(ChatRoute(conv: c.id)) } label: { ConversationRow(c: c) }.buttonStyle(.plain)
+                    }
+                }
+            }
+            if !hits.isEmpty {
+                Section("Messages") {
+                    ForEach(hits) { h in
+                        Button { path.append(ChatRoute(conv: h.msg.conv, focus: h.msg.id)) } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Avatar(conv: h.msg.conv, size: 36)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(m.title(h.msg.conv)).font(.subheadline.bold()).lineLimit(1)
+                                        Spacer()
+                                        Text(ConversationRow.when(h.msg.ts)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Text(Self.highlighted(Self.snippet(h.msg.body, q), q)).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+            if chats.isEmpty && hits.isEmpty {
+                Text("Nothing found for “\(q)”.").foregroundStyle(.secondary)
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    /// The part of a long message around the match.
+    static func snippet(_ body: String, _ q: String) -> String {
+        guard body.count > 120, let r = body.range(of: q, options: .caseInsensitive) else { return body }
+        let start = body.index(r.lowerBound, offsetBy: -40, limitedBy: body.startIndex) ?? body.startIndex
+        return (start == body.startIndex ? "" : "…") + body[start...].prefix(160)
+    }
+
+    static func highlighted(_ text: String, _ q: String) -> AttributedString {
+        var a = AttributedString(text)
+        var from = a.startIndex
+        while let r = a[from...].range(of: q, options: .caseInsensitive) {
+            a[r].inlinePresentationIntent = .stronglyEmphasized
+            from = r.upperBound
+        }
+        return a
     }
 }
 
@@ -134,12 +218,12 @@ struct Avatar: View {
 
 struct RequestsView: View {
     @EnvironmentObject var m: Messenger
-    @Binding var path: [String]
+    @Binding var path: [ChatRoute]
 
     var body: some View {
         let _ = m.revision
         List(m.conversations(requests: true)) { c in
-            Button { path.append(c.id) } label: { ConversationRow(c: c) }
+            Button { path.append(ChatRoute(conv: c.id)) } label: { ConversationRow(c: c) }
         }
         .navigationTitle("Requests")
     }

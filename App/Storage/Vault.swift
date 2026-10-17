@@ -102,19 +102,45 @@ enum CrossProcessLock {
 
 /// Settings both processes read (read receipts, notification previews, push token).
 enum Shared {
-    static let defaults = UserDefaults(suiteName: Paths.appGroup) ?? .standard
+    static let defaults: UserDefaults = {
+        let d = UserDefaults(suiteName: Paths.appGroup) ?? .standard
+        // A sideloaded install that just gained its App Group (under another
+        // name): bring the settings saved before, app-private, along.
+        if Paths.appGroup != AppGroup.standard, AppGroup.container != nil, !d.bool(forKey: "settings_moved"),
+           let old = UserDefaults.standard.persistentDomain(forName: AppGroup.standard) {
+            for (k, v) in old where d.object(forKey: k) == nil { d.set(v, forKey: k) }
+            d.set(true, forKey: "settings_moved")
+        }
+        return d
+    }()
 }
 
-/// Where everything lives: the App Group container, shared with the notification extension.
+/// Where everything lives: the App Group container, shared with the extensions.
 enum Paths {
-    static let appGroup = "group.com.cellosig.app"
+    static var appGroup: String { AppGroup.id }
     /// Set from Info.plist (the team prefix is only known at signing time).
     static let keychainGroup: String? = Bundle.main.object(forInfoDictionaryKey: "CellosigKeychainGroup") as? String
 
     static let root: URL = {
-        let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("cellosig", isDirectory: true)
+        let fm = FileManager.default
+        let private_ = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("cellosig", isDirectory: true)
+        var dir = private_
+        if let group = AppGroup.container {
+            let shared = group.appendingPathComponent("cellosig", isDirectory: true)
+            // Installed before without an App Group (sideloaded): everything is in
+            // the app's private folder. Move it over once, or the account is lost.
+            if fm.fileExists(atPath: private_.appendingPathComponent("cellosig.sqlite").path),
+               !fm.fileExists(atPath: shared.appendingPathComponent("cellosig.sqlite").path) {
+                try? fm.removeItem(at: shared)
+                if (try? fm.moveItem(at: private_, to: shared)) != nil {
+                    movedFrom = (private_.path, shared.path)
+                    dir = shared
+                }
+                // (If it couldn't be moved, keep using it where it is.)
+            } else if !fm.fileExists(atPath: private_.appendingPathComponent("cellosig.sqlite").path) {
+                dir = shared
+            }
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
         var values = URLResourceValues()
@@ -123,6 +149,9 @@ enum Paths {
         try? u.setResourceValues(values)
         return dir
     }()
+
+    /// Set when this launch moved the data folder (old path, new path): stored file paths need rewriting.
+    private(set) static var movedFrom: (old: String, new: String)?
 
     static var keys: URL { sub("keys") }
     static var sessions: URL { sub("keys/sessions") }

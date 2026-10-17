@@ -56,6 +56,23 @@ blocking) plus:
 - Voice notes, stickers (built-in emoji pack), animated GIFs, reminders
   (`TimeParser` finds times like "tomorrow at 5"), App lock (Face ID / passcode).
 - Pictures from others are decoded scaled down (≤1600 px, GIFs ≤50 frames).
+- **Edit / delete for everyone** (payloads `edit` and `unsend`, target = message
+  id; Android 0.3.5+ shows them, older Android ignores them). Your own messages,
+  within 24 h; receivers accept them only from the original sender.
+- **Search** across chats and messages; tapping a hit opens the chat at it.
+- **Widget** (`Widget/`, Home and Lock Screen) and **Share to cellosig**
+  (`ShareExt/`). Neither can read keys or messages: the app writes
+  `widget.json` / `share-targets.json` into the App Group (chat contents only
+  when notification previews are on and App lock is off), and the share
+  extension queues files in `inbox/` for the app to encrypt and send
+  (`App/Bridge/ExtensionBridge.swift`). Sideloaded builds discover the App
+  Group name from the provisioning profile (`Shared/AppGroup.swift`).
+- Themes (light/dark/system), accent colour, chat wallpapers (presets or a photo).
+- Disappearing-message timer in the chat header.
+
+Sideload artifacts: `cellosig-sideload.ipa` (no extensions) and
+`cellosig-sideload-widgets.ipa` (widget + share; App Group
+`group.com.cellosig.sideload`; uses all 3 of a free Apple ID's app slots).
 
 ## Not on iPhone
 
