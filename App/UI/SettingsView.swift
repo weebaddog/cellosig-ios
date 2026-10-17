@@ -114,9 +114,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Erases your account from the relay and everything cellosig stored on this iPhone.")
                 }
-                Section {
-                    LabeledContent("Version", value: "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
-                }
+                AboutSection()
             }
             .navigationTitle("Settings")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }

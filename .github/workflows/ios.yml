@@ -81,6 +81,9 @@ jobs:
             # CallKit refuses incoming calls without it (no PushKit pushes come anyway).
             /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:1 string voip" "$1"
             /usr/libexec/PlistBuddy -c "Add :CellosigKeepAlive bool true" "$1"
+            # Shown in Settings → About, so you can tell which IPA is installed.
+            /usr/libexec/PlistBuddy -c "Add :CellosigBuildDate string $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
+            /usr/libexec/PlistBuddy -c "Add :CellosigCommit string ${GITHUB_SHA::7}" "$1"
           }
 
           # 1) Plain: no extensions at all (installs with any free Apple ID).
