@@ -64,6 +64,13 @@ final class Database {
             PRAGMA user_version = 3;
             """)
         }
+        if version < 4 {
+            // Voice-note transcripts (made on the phone, never sent).
+            try exec("""
+            ALTER TABLE messages ADD COLUMN transcript TEXT;
+            PRAGMA user_version = 4;
+            """)
+        }
         // The data folder just moved into the App Group: files stored by full path moved with it.
         if let moved = Paths.movedFrom {
             let (old, new) = moved

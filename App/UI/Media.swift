@@ -1,5 +1,7 @@
 import AVFoundation
 import ImageIO
+import PhotosUI
+import Speech
 import SwiftUI
 import UIKit
 
@@ -151,24 +153,96 @@ final class VoiceRecorder: NSObject, ObservableObject {
     }
 }
 
-/// Plays a voice note from memory: the decrypted audio never touches the disk.
-/// It isn't parsed at all until you press play.
+/// Plays a voice note from memory: the decrypted audio never touches the disk
+/// (except briefly, protected, while it's being transcribed).
+/// It isn't parsed at all until you press play or transcribe.
 struct VoiceNoteView: View {
     @EnvironmentObject var m: Messenger
     let msg: Message
     @StateObject private var player = VoicePlayer()
+    @State private var transcribing = false
+    @State private var problem: String?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button { player.toggle { m.attachmentData(msg) } } label: {
-                Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30))
-            }.buttonStyle(.plain)
-            VStack(alignment: .leading, spacing: 4) {
-                ProgressView(value: player.progress).frame(width: 130)
-                Text(player.duration.map { CallManager.formatDuration(Int($0.rounded())) } ?? "Voice note").font(.caption2).opacity(0.8)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Button { player.toggle { m.attachmentData(msg) } } label: {
+                    Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30))
+                }.buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: player.progress).frame(width: 130)
+                    Text(player.duration.map { CallManager.formatDuration(Int($0.rounded())) } ?? "Voice note").font(.caption2).opacity(0.8)
+                }
             }
+            if let t = msg.transcript {
+                Text(t.isEmpty ? "(no words recognized)" : t).font(.callout).italic().textSelection(.enabled)
+            } else if transcribing {
+                HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Transcribing…").font(.caption) }
+            } else {
+                Button {
+                    transcribing = true
+                    problem = nil
+                    Task {
+                        defer { transcribing = false }
+                        guard let audio = m.attachmentData(msg) else { problem = "Couldn't open the voice note."; return }
+                        do { m.saveTranscript(msg, try await Transcriber.transcribe(audio)) }
+                        catch let e as Transcriber.Failure { problem = e.message }
+                        catch { problem = "Couldn't transcribe it." }
+                    }
+                } label: { Label("Transcribe", systemImage: "text.quote").font(.caption) }
+                .buttonStyle(.plain)
+            }
+            if let problem { Text(problem).font(.caption2).opacity(0.8) }
         }
         .onDisappear { player.stop() }
+    }
+}
+
+/// Voice note → text with Apple's speech recognition, ON THE PHONE ONLY: if
+/// this iPhone can't recognize the language on-device, it refuses rather than
+/// sending the audio to Apple's servers.
+enum Transcriber {
+    enum Failure: Error {
+        case notAllowed, unavailable
+
+        var message: String {
+            switch self {
+            case .notAllowed: return "Allow Speech Recognition for cellosig in Settings to transcribe voice notes."
+            case .unavailable: return "This iPhone can't transcribe this language on the phone itself (cellosig won't send audio to Apple)."
+            }
+        }
+    }
+
+    private final class Once { var done = false }
+
+    static func transcribe(_ audio: Data) async throws -> String {
+        let status = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0) } }
+        guard status == .authorized else { throw Failure.notAllowed }
+        guard let rec = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+              rec.supportsOnDeviceRecognition, rec.isAvailable else { throw Failure.unavailable }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("voice", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
+        let file = dir.appendingPathComponent(UUID().uuidString + ".m4a")
+        try audio.write(to: file, options: [.atomic, .completeFileProtection])
+        defer { try? FileManager.default.removeItem(at: file) }
+        let req = SFSpeechURLRecognitionRequest(url: file)
+        req.requiresOnDeviceRecognition = true
+        req.shouldReportPartialResults = false
+        let once = Once()
+        defer { withExtendedLifetime(rec) {} }   // the recognizer must outlive its task
+        return try await withCheckedThrowingContinuation { c in
+            rec.recognitionTask(with: req) { result, error in
+                guard !once.done else { return }
+                if let result, result.isFinal {
+                    once.done = true
+                    c.resume(returning: result.bestTranscription.formattedString)
+                } else if let error {
+                    once.done = true
+                    // "No speech detected" is a result, not a failure.
+                    if (error as NSError).code == 1110 { c.resume(returning: "") } else { c.resume(throwing: error) }
+                }
+            }
+        }
     }
 }
 
@@ -226,6 +300,32 @@ final class VoicePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
 // MARK: - Stickers
 
+/// Stickers you made from your own photos (shrunk to 512 px PNG, kept in the app's protected storage).
+enum MyStickers {
+    private static var dir: URL {
+        let d = Paths.root.appendingPathComponent("stickers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true,
+                                                 attributes: [.protectionKey: FileProtectionType.complete])
+        return d
+    }
+
+    static func all() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        return files.filter { $0.pathExtension == "png" }.sorted {
+            let a = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            return a > b
+        }
+    }
+
+    static func add(_ data: Data) -> Bool {
+        guard let img = ImageDecode.still(data, maxPixels: 512), let png = img.pngData() else { return false }
+        return (try? png.write(to: dir.appendingPathComponent(UUID().uuidString + ".png"), options: [.atomic, .completeFileProtection])) != nil
+    }
+
+    static func remove(_ url: URL) { try? FileManager.default.removeItem(at: url) }
+}
+
 /// Built-in stickers: big emoji drawn into a 512 px PNG on the phone, sent as
 /// kind "sticker" (shown without a bubble on both iPhone and Android).
 struct StickerPicker: View {
@@ -233,10 +333,41 @@ struct StickerPicker: View {
     let pick: (Data) -> Void
     static let pack = ["😀", "😂", "🥹", "😍", "😎", "🤔", "😴", "😭", "😡", "🥳", "👍", "👎", "👏", "🙏", "💪", "🤝",
                        "❤️", "💔", "🔥", "✨", "🎉", "🎂", "☕️", "🍕", "🐶", "🐱", "🦄", "🌈", "⭐️", "🌙", "✅", "❓"]
+    @State private var mine = MyStickers.all()
+    @State private var newPhoto: PhotosPickerItem?
+    @State private var addFailed = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("My stickers").font(.headline).padding(.horizontal)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 16) {
+                        PhotosPicker(selection: $newPhoto, matching: .images) {
+                            VStack(spacing: 4) {
+                                Image(systemName: "plus").font(.title)
+                                Text("From a photo").font(.caption2)
+                            }
+                            .frame(width: 72, height: 72)
+                            .background(RoundedRectangle(cornerRadius: 12).strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5])))
+                        }
+                        ForEach(mine, id: \.self) { url in
+                            Button {
+                                if let d = try? Data(contentsOf: url) { pick(d) }
+                                dismiss()
+                            } label: {
+                                if let img = UIImage(contentsOfFile: url.path) {
+                                    Image(uiImage: img).resizable().scaledToFit().frame(width: 72, height: 72)
+                                }
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) { MyStickers.remove(url); mine = MyStickers.all() } label: { Label("Remove", systemImage: "trash") }
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                    if addFailed { Text("Couldn't use that picture.").font(.caption).foregroundStyle(.red).padding(.horizontal) }
+                    Text("Emoji").font(.headline).padding([.horizontal, .top])
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 16) {
                     ForEach(Self.pack, id: \.self) { e in
                         Button {
@@ -246,6 +377,20 @@ struct StickerPicker: View {
                     }
                 }
                 .padding()
+                }
+                .padding(.top)
+            }
+            .onChange(of: newPhoto) { item in
+                guard let item else { return }
+                Task {
+                    if let d = try? await item.loadTransferable(type: Data.self), MyStickers.add(d) {
+                        mine = MyStickers.all()
+                        addFailed = false
+                    } else {
+                        addFailed = true
+                    }
+                    newPhoto = nil
+                }
             }
             .navigationTitle("Stickers")
             .navigationBarTitleDisplayMode(.inline)

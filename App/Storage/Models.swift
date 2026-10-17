@@ -23,6 +23,7 @@ struct Message: Identifiable, Equatable {
     var expiresAt: Int64?
     var editedAt: Int64?
     var deleted: Bool
+    var transcript: String?
 
     var isSystem: Bool { msgId.hasPrefix(Messenger.systemPrefix) }
     var isImage: Bool { fileMime?.hasPrefix("image/") == true }
@@ -45,6 +46,7 @@ struct Message: Identifiable, Equatable {
         expiresAt = r.int("expiresAt")
         editedAt = r.int("editedAt")
         deleted = r.bool("deleted")
+        transcript = r.str("transcript")
     }
 }
 

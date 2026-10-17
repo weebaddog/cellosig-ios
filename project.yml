@@ -57,6 +57,8 @@ targets:
         NSPhotoLibraryAddUsageDescription: Save photos from your chats.
         NSMicrophoneUsageDescription: For calls and voice notes. Audio is end-to-end encrypted.
         NSFaceIDUsageDescription: Unlock cellosig when App lock is on.
+        NSContactsUsageDescription: Show your contacts' names and find which of them use cellosig. Only phone numbers are sent to the relay to check; names stay on your iPhone.
+        NSSpeechRecognitionUsageDescription: Turn voice notes into text, on your iPhone only (nothing is sent to Apple).
         UIBackgroundModes: [remote-notification, voip, audio]
         # cellosig://chat?id=… (the widget opens a chat with it)
         CFBundleURLTypes:

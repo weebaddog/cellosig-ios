@@ -264,9 +264,17 @@ struct NewChatView: View {
                     }
                     Button(groupMode ? "Add" : (busy ? "Checking…" : "Start chat")) { go() }.disabled(number.isEmpty || busy)
                 }
+                ContactsSection { p in
+                    if groupMode {
+                        if !members.contains(p) { members.append(p) }
+                    } else {
+                        m.startChat(p)
+                        open(p)
+                    }
+                }
                 if groupMode && !members.isEmpty {
                     Section("Members") {
-                        ForEach(members, id: \.self) { Text(PhoneNumbers.pretty($0)) }
+                        ForEach(members, id: \.self) { Text(m.displayName($0)) }
                             .onDelete { members.remove(atOffsets: $0) }
                         Button("Create group") {
                             Task {

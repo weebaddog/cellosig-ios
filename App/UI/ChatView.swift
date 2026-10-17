@@ -391,6 +391,9 @@ struct MessageRow: View {
             } else {
                 Text(msg.body).textSelection(.enabled)
             }
+            if !msg.deleted, msg.poll == nil, let video = YouTubeLinks.find(msg.body) {
+                YouTubeCard(videoId: video, tint: msg.outgoing ? .white : .primary)
+            }
             if let code = otp {
                 Button { SecurePasteboard.copy(code) } label: { Label("Copy code \(code)", systemImage: "doc.on.doc") }
                     .buttonStyle(.bordered).controlSize(.small)

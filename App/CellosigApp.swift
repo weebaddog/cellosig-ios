@@ -113,6 +113,7 @@ final class AppModel: ObservableObject {
             m.start()
             messenger = m
             ExtensionBridge.shared.attach(m)
+            ContactBook.shared.loadNames(m)
             CallManager.shared.registerForVoIP()
             KeepAlive.shared.start()
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in

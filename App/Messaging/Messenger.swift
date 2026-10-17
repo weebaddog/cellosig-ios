@@ -882,7 +882,7 @@ final class Messenger: ObservableObject {
         if let path = msg.filePath { try? FileManager.default.removeItem(atPath: path) }
         try? db.run("""
             UPDATE messages SET deleted = 1, body = '', fileName = NULL, fileMime = NULL, fileSize = NULL, filePath = NULL,
-              fileKey = NULL, fileBlob = NULL, fileState = NULL, fileKind = NULL, pollJson = NULL WHERE id = ?
+              fileKey = NULL, fileBlob = NULL, fileState = NULL, fileKind = NULL, pollJson = NULL, transcript = NULL WHERE id = ?
             """, msg.id)
         try? db.run("DELETE FROM reactions WHERE msgId = ?", msg.msgId)
         try? db.run("DELETE FROM votes WHERE msgId = ?", msg.msgId)
@@ -897,6 +897,11 @@ final class Messenger: ObservableObject {
         guard latest.id == row else { touch(); return }
         let text = latest.deleted ? "🚫 Message deleted" : latest.expiresInSec > 0 ? "⏱ Disappearing message" : latest.body
         try? db.run("UPDATE conversations SET lastText = ? WHERE id = ?", text, conv)
+        touch()
+    }
+
+    func saveTranscript(_ msg: Message, _ text: String) {
+        try? db.run("UPDATE messages SET transcript = ? WHERE id = ?", text, msg.id)
         touch()
     }
 
@@ -1136,7 +1141,12 @@ final class Messenger: ObservableObject {
 
     // MARK: - Names, safety numbers
 
+    /// Names from your iPhone's contacts (filled in by ContactBook, if you allowed it).
+    static var contactNames: [String: String] = [:]
+
+    /// Your contact's name for them, else the name they chose, else the number (as on Android).
     func displayName(_ phone: String) -> String {
+        if let n = Self.contactNames[phone] { return n }
         if let n = try? db.query("SELECT name FROM profiles WHERE phone = ?", phone).first?.str("name"), !n.isEmpty { return n }
         return PhoneNumbers.pretty(phone)
     }
