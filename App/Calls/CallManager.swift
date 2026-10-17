@@ -189,6 +189,12 @@ final class CallManager: NSObject, ObservableObject {
                 if s.id != sig.id { send(from, CallSignal(id: sig.id, kind: "busy")) }
                 return
             }
+            // Lockdown mode: only contacts with a verified safety number may ring.
+            if Lockdown.on, messenger.map({ !$0.isVerified(from) || $0.trustBroken(from) }) ?? true {
+                send(from, CallSignal(id: sig.id, kind: "busy"))
+                messenger?.logCall(from, outgoing: false, text: "📞 Missed call (Lockdown mode: only verified contacts can call)", missed: true)
+                return
+            }
             if let at = declinedPushAt, Date().timeIntervalSince(at) < 30 {
                 declinedPushAt = nil
                 send(from, CallSignal(id: sig.id, kind: "hangup", reason: "declined"))

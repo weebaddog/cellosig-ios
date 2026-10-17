@@ -46,7 +46,6 @@ struct SettingsView: View {
     @State private var name = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var confirmDelete = false
-    @State private var lockError = false
     @AppStorage("notify_preview", store: Shared.defaults) private var notifyPreview = false
 
     var body: some View {
@@ -89,13 +88,7 @@ struct SettingsView: View {
                         Text("This copy of cellosig was installed without Apple's push service, so it only receives while it's running. On: it keeps running (by playing silence) so messages notify and calls ring — uses more battery. Swiping it away in the app switcher still stops it.")
                     }
                 }
-                Section {
-                    Toggle("Lock with Face ID or passcode", isOn: Binding(get: { model.lockEnabled }, set: { on in
-                        Task { if !(await model.setLock(on)) { lockError = true } }
-                    }))
-                } header: { Text("App lock") } footer: {
-                    Text("Locks cellosig whenever you leave it. Calls still ring on the lock screen.")
-                }
+                SecuritySettings()
                 let reminders = m.reminders()
                 if !reminders.isEmpty {
                     Section("Reminders") {
@@ -142,9 +135,6 @@ struct SettingsView: View {
                     Task { await m.deleteAccount(); model.erased() }
                 }
             } message: { Text("This can't be undone.") }
-            .alert("App lock", isPresented: $lockError) { Button("OK") {} } message: {
-                Text("Couldn't turn the lock on. This iPhone needs a passcode (Settings → Face ID & Passcode), and you need to confirm it once.")
-            }
         }
     }
 

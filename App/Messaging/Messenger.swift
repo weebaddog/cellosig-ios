@@ -739,7 +739,8 @@ final class Messenger: ObservableObject {
         }
         let f = p.file
         let request = isRequest(conv, from)
-        let fetch = f != nil && !request && (f!.size <= Self.autoDownloadBytes)
+        // Lockdown mode: nothing downloads until you tap it.
+        let fetch = f != nil && !request && !Lockdown.on && (f!.size <= Self.autoDownloadBytes)
         let viewing = activeChat == conv
         let expire = max(0, p.expire ?? 0)
         let pollJson = p.t == "poll" ? p.poll.flatMap { (2...10).contains($0.options.count) ? Wire.json($0) : nil } : nil

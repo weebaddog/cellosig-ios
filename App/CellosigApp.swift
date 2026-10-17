@@ -160,7 +160,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Face ID / Touch ID, falling back to the phone's passcode.
+    /// With a cellosig password: the password, or Face ID / Touch ID (never in
+    /// Lockdown mode). Without one: Face ID / Touch ID, falling back to the
+    /// phone's passcode.
     /// `auto`: the lock screen asking by itself — only once per visit, so
     /// cancelling the prompt doesn't bring it straight back.
     func unlock(auto: Bool = false) async {
@@ -168,11 +170,60 @@ final class AppModel: ObservableObject {
         if auto { guard !promptedThisVisit else { return }; promptedThisVisit = true }
         let ctx = LAContext()
         var err: NSError?
+        if AppPassword.isSet {
+            guard biometricsAllowed, ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err) else { return }
+            ctx.localizedFallbackTitle = ""   // the fallback is our password field, not the phone's passcode
+            if (try? await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock cellosig")) == true { locked = false }
+            return
+        }
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
             // The passcode was removed from the phone: nothing left to check against.
             locked = false; return
         }
         if (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock cellosig")) == true { locked = false }
+    }
+
+    /// Face ID may unlock the app (with a password set: unless Lockdown mode is on).
+    var biometricsAllowed: Bool { !(AppPassword.isSet && Lockdown.on) }
+
+    var eraseOnFails: Bool {
+        get { Shared.defaults.bool(forKey: "erase_on_fails") }
+        set { Shared.defaults.set(newValue, forKey: "erase_on_fails"); objectWillChange.send() }
+    }
+
+    /// Unlock with the cellosig password. Returns what to tell the user if it was wrong.
+    func unlock(password: String) -> String? {
+        switch AppPassword.check(password, eraseOnFails: eraseOnFails) {
+        case .ok:
+            locked = false
+            return nil
+        case .wrong(let left?):
+            return left == 1 ? "Wrong password. One more wrong try erases cellosig." : "Wrong password. \(left) tries left before cellosig erases itself."
+        case .wrong(nil):
+            return "Wrong password."
+        case .erase:
+            eraseEverything()
+            return nil
+        }
+    }
+
+    /// Wipe cellosig from this iPhone (keys, messages, files, settings). The
+    /// relay account stays; signing up again on this number replaces it.
+    func eraseEverything() {
+        CallManager.shared.hangup()
+        if let m = messenger { m.eraseEverything() } else {
+            Vault.shared.destroyKey()
+            try? FileManager.default.removeItem(at: Paths.root)
+        }
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        for key in ["app_lock", "erase_on_fails", "lockdown", "notify_preview", "read_receipts", "wallpaper", "keepalive_paused_at"] {
+            Shared.defaults.removeObject(forKey: key)
+        }
+        messenger = nil
+        locked = false
+        KeepAlive.shared.stop()   // nothing left to stay connected for
+        ExtensionBridge.shared.detach()
     }
 
     /// Turning the lock on needs a passcode on the phone and one successful check.

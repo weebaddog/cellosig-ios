@@ -320,8 +320,18 @@ struct MessageRow: View {
     var highlighted = false
     var edit: (Message) -> Void = { _ in }
     var unsend: (Message) -> Void = { _ in }
+    /// Lockdown mode: this picture was tapped to show it.
+    @State private var revealed = false
 
-    private var isSticker: Bool { msg.fileKind == "sticker" && msg.fileState == "ready" }
+    private var isSticker: Bool { msg.fileKind == "sticker" && msg.fileState == "ready" && (!Lockdown.on || revealed) }
+
+    /// A verification code someone sent you ("your code is 482913"): one tap to copy (as on Android).
+    private var otp: String? {
+        guard !msg.outgoing, !msg.deleted, msg.poll == nil,
+              let r = msg.body.range(of: #"(?i)\b(?:code|otp|pin|passcode)\b\D{0,30}?(\d{4,8})\b"#, options: .regularExpression)
+        else { return nil }
+        return String(msg.body[r]).components(separatedBy: CharacterSet.decimalDigits.inverted).last { (4...8).contains($0.count) }
+    }
 
     var body: some View {
         if msg.isSystem {
@@ -381,6 +391,10 @@ struct MessageRow: View {
             } else {
                 Text(msg.body).textSelection(.enabled)
             }
+            if let code = otp {
+                Button { SecurePasteboard.copy(code) } label: { Label("Copy code \(code)", systemImage: "doc.on.doc") }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .foregroundStyle(msg.outgoing ? Color.white : Color.primary)
@@ -392,6 +406,12 @@ struct MessageRow: View {
         case "ready":
             if msg.fileKind == "voice" || msg.fileMime?.hasPrefix("audio/") == true {
                 VoiceNoteView(msg: msg)
+            } else if msg.isImage && Lockdown.on && !revealed {
+                // Lockdown mode: not even decoded until you ask.
+                Button { revealed = true } label: {
+                    Label(msg.fileKind == "sticker" ? "Show sticker" : "Show picture", systemImage: "eye.slash")
+                }
+                .foregroundStyle(msg.outgoing ? Color.white : Color.accentColor)
             } else if msg.isImage {
                 let side: CGFloat = isSticker ? 140 : 240
                 let img = ImageDecode.forMessage(msg.id) { m.attachmentData(msg) }

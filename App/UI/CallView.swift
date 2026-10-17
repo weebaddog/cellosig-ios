@@ -65,20 +65,45 @@ struct CallView: View {
     }
 }
 
-/// Covers the app until Face ID / Touch ID / the passcode unlocks it.
+/// Covers the app until it's unlocked: the cellosig password (if one is set),
+/// or Face ID / Touch ID / the phone's passcode.
 struct LockView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.scenePhase) private var phase
+    @State private var password = ""
+    @State private var message: String?
+    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "lock.fill").font(.system(size: 44)).foregroundStyle(.secondary)
             Text("cellosig is locked").font(.title3.bold())
-            Button("Unlock") { Task { await model.unlock() } }.buttonStyle(.borderedProminent)
+            if AppPassword.isSet {
+                SecureField("Password", text: $password)
+                    .textContentType(.password)
+                    .focused($focused)
+                    .onSubmit(tryPassword)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemBackground)))
+                    .frame(maxWidth: 280)
+                Button("Unlock", action: tryPassword).buttonStyle(.borderedProminent).disabled(password.isEmpty)
+                if model.biometricsAllowed {
+                    Button("Use Face ID") { Task { await model.unlock() } }
+                }
+                if let message { Text(message).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center).padding(.horizontal) }
+            } else {
+                Button("Unlock") { Task { await model.unlock() } }.buttonStyle(.borderedProminent)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground).ignoresSafeArea())
         .onAppear { if phase == .active { Task { await model.unlock(auto: true) } } }
         .onChange(of: phase) { p in if p == .active { Task { await model.unlock(auto: true) } } }
+    }
+
+    private func tryPassword() {
+        guard !password.isEmpty else { return }
+        message = model.unlock(password: password)
+        password = ""
     }
 }
