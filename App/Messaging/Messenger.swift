@@ -805,7 +805,7 @@ final class Messenger: ObservableObject {
     }
 
     private func onReaction(_ from: String, _ p: Payload) {
-        guard let conv = conversationFor(from, p.group), let t = p.target, let target = messageIn(conv, t) else { return }
+        guard let conv = conversationFor(from, p.group), let t = p.target, let target = messageIn(conv, t), !target.deleted else { return }
         if let e = p.emoji, !e.trimmingCharacters(in: .whitespaces).isEmpty, e.count <= 16 {
             try? db.run("INSERT OR REPLACE INTO reactions(msgId, member, emoji, ts) VALUES(?, ?, ?, ?)", target.msgId, from, e, nowMs())
             if target.outgoing && activeChat != conv { onIncoming?(conv, from, "Reacted \(e) to “\(target.body.prefix(40))”") }

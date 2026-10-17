@@ -131,6 +131,10 @@ struct ChatView: View {
             guard case .success(let url) = result else { return }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            // Check the size before reading: a huge file read into memory would crash the app.
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, Int64(size) > Messenger.maxFileBytes {
+                error = "That file is too large (90 MB max)."; return
+            }
             guard let data = try? Data(contentsOf: url) else { error = "Couldn't read that file."; return }
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
             send(data: data, name: url.lastPathComponent, mime: mime)
@@ -139,7 +143,12 @@ struct ChatView: View {
             guard let item else { return }
             Task {
                 defer { photo = nil }
-                guard let data = try? await item.loadTransferable(type: Data.self) else { error = "Couldn't load that photo."; return }
+                // As a file first, so a long video's size is checked before it's loaded into memory.
+                guard let picked = try? await item.loadTransferable(type: PickedFile.self) else { error = "Couldn't load that photo."; return }
+                defer { try? FileManager.default.removeItem(at: picked.url) }
+                let size = (try? picked.url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+                guard size <= Messenger.maxFileBytes else { error = "That video is too large (90 MB max)."; return }
+                guard let data = try? Data(contentsOf: picked.url) else { error = "Couldn't load that photo."; return }
                 let type = item.supportedContentTypes.first
                 let mime = type?.preferredMIMEType ?? "image/jpeg"
                 let ext = type?.preferredFilenameExtension ?? "jpg"
@@ -280,6 +289,23 @@ struct ReminderSheet: View {
 }
 
 extension URL: Identifiable { public var id: String { absoluteString } }
+
+/// A photo or video from the picker, copied to a protected temporary file
+/// (deleted after sending, and on next launch).
+struct PickedFile: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .item) { received in
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("share", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dest = dir.appendingPathComponent(UUID().uuidString + "." + received.file.pathExtension)
+            try FileManager.default.copyItem(at: received.file, to: dest)
+            try? (dest as NSURL).setResourceValue(URLFileProtection.complete, forKey: .fileProtectionKey)
+            return PickedFile(url: dest)
+        }
+    }
+}
 
 struct MessageRow: View {
     @EnvironmentObject var m: Messenger

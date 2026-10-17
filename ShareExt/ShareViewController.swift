@@ -107,12 +107,18 @@ enum Collector {
                     case .some(.none): skipped += 1
                     case .none: break
                     }
-                } else if p.hasItemConformingToTypeIdentifier(UTType.url.identifier),
-                          let url = try? await p.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
+                } else if let url = await webURL(p) {
+                    // A web page: send the link (not the page archive some apps also offer).
                     texts.append(url.absoluteString)
                 } else if p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
                           let s = try? await p.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
                     texts.append(s)
+                } else if let type = otherData(p) {
+                    switch await copyFile(p, type: type, into: dir, index: files.count) {
+                    case .some(.some(let f)): files.append(f)
+                    case .some(.none): skipped += 1
+                    case .none: break
+                    }
                 }
             }
         }
@@ -126,8 +132,22 @@ enum Collector {
             if let t = offered.first(where: { $0.conforms(to: wanted) }) { return t }
         }
         if let t = offered.first(where: { $0.conforms(to: .fileURL) }) { return t }
-        if let t = offered.first(where: { $0.conforms(to: .data) && !$0.conforms(to: .text) && !$0.conforms(to: .url) }) { return t }
         return nil
+    }
+
+    private static func webURL(_ p: NSItemProvider) async -> URL? {
+        guard p.hasItemConformingToTypeIdentifier(UTType.url.identifier),
+              let url = try? await p.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL,
+              !url.isFileURL else { return nil }
+        return url
+    }
+
+    /// Anything else that's a document of some kind (last resort).
+    private static func otherData(_ p: NSItemProvider) -> UTType? {
+        p.registeredTypeIdentifiers.compactMap(UTType.init).first {
+            $0.conforms(to: .data) && !$0.conforms(to: .text) && !$0.conforms(to: .url) && !$0.conforms(to: .propertyList)
+                && $0.identifier != "com.apple.webarchive"
+        }
     }
 
     /// nil: couldn't read it; .some(nil): too large; .some(file): copied.
