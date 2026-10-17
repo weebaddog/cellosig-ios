@@ -50,10 +50,12 @@ jobs:
           xcodegen generate
       - name: Build for the simulator (unsigned)
         run: |
-          set -o pipefail
+          # Full output to a file; on failure show every error (a plain tail can cut them off).
           xcodebuild -project Cellosig.xcodeproj -scheme Cellosig \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 200
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build > build.log 2>&1 \
+            || { grep -E "error:" build.log | sort -u | head -80; tail -n 30 build.log; exit 1; }
+          tail -n 20 build.log
 
   sideload:
     # Unsigned device build to install with Sideloadly and a free Apple ID.
@@ -75,11 +77,12 @@ jobs:
           xcodegen generate
       - name: Build for iPhone (unsigned)
         run: |
-          set -o pipefail
           xcodebuild -project Cellosig.xcodeproj -scheme Cellosig -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CELLOSIG_BUNDLE_ID=com.cellosig.sideload \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" build | tail -n 50
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" build > build.log 2>&1 \
+            || { grep -E "error:" build.log | sort -u | head -80; tail -n 30 build.log; exit 1; }
+          tail -n 20 build.log
       - name: Package IPAs
         run: |
           set -e
