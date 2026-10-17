@@ -7,3 +7,7 @@ DerivedData/
 *.p12
 *.mobileprovision
 .DS_Store
+
+# Sideloadly writes its log into whatever folder it was started from
+sideloadly*.log
+*.log
