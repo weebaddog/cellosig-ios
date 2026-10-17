@@ -140,6 +140,7 @@ final class AppModel: ObservableObject {
     func phaseChanged(_ p: ScenePhase) {
         obscured = p != .active
         if p == .active {
+            KeepAlive.shared.enteredForeground()
             messenger?.foregrounded()
             ExtensionBridge.shared.processInbox()
             if let conv = chatOnScreen, let m = messenger, m.activeChat == nil {
@@ -152,6 +153,7 @@ final class AppModel: ObservableObject {
             // Still running (sideloaded keep-alive, or a call): nobody is looking, so
             // new messages in the open chat notify and stay unread.
             if let conv = messenger?.activeChat { chatOnScreen = conv; messenger?.activeChat = nil }
+            if messenger != nil { KeepAlive.shared.enteredBackground() }
             promptedThisVisit = false
             if lockEnabled && messenger != nil { locked = true }
         }

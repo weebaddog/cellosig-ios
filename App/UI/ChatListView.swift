@@ -52,6 +52,10 @@ struct ChatListView: View {
                 if !m.connected {
                     Label("Connecting to relay…", systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.orange)
                 }
+                if KeepAlive.shared.enabled, let paused = KeepAlive.shared.pausedAt, Date().timeIntervalSince(paused) < 6 * 3600 {
+                    Label("iOS paused cellosig in the background at \(paused.formatted(date: .omitted, time: .shortened)), so calls and messages waited until you opened it. Don't swipe cellosig away in the app switcher, and turn off Low Power Mode.", systemImage: "moon.zzz")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
                 if m.authFailed {
                     Label("The relay no longer accepts this sign-in. Sign up again in Settings.", systemImage: "exclamationmark.triangle")
                         .font(.footnote).foregroundStyle(.red)
