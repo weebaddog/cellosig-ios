@@ -11,14 +11,19 @@ struct CallView: View {
         VStack(spacing: 14) {
             Spacer()
             Avatar(conv: call.peer, size: 112)
-            Text(m.displayName(call.peer)).font(.title.bold()).lineLimit(1)
-            if m.hasProfileName(call.peer) {
+            Text(name).font(.title.bold()).lineLimit(1)
+            if name != PhoneNumbers.pretty(call.peer) {
                 Text(PhoneNumbers.pretty(call.peer)).foregroundStyle(.secondary)
             }
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 Text(status).font(.title3).foregroundStyle(.secondary).monospacedDigit()
             }
-            Label("End-to-end encrypted", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
+            if call.pstn {
+                // Honest about it: the phone network carries this call in the clear.
+                Label("Phone call · not end-to-end encrypted", systemImage: "phone.fill").font(.caption).foregroundStyle(.orange)
+            } else {
+                Label("End-to-end encrypted", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
+            }
             Spacer()
             if call.phase == .incoming {
                 HStack(spacing: 70) {
@@ -38,6 +43,12 @@ struct CallView: View {
         .background(Color(.systemBackground).ignoresSafeArea())
     }
 
+    /// Your name for them, else (a phone call) the network's caller name, else the number.
+    private var name: String {
+        if call.pstn, !m.hasProfileName(call.peer), let n = call.networkName { return n }
+        return m.displayName(call.peer)
+    }
+
     private var status: String {
         switch call.phase {
         case .calling: return "Calling…"
@@ -52,7 +63,7 @@ struct CallView: View {
             case "failed": return "Couldn't connect"
             case "no_answer", "missed": return "No answer"
             case "no_microphone": return "Microphone access is off"
-            default: return "Call ended"
+            default: return CallManager.phoneRefusal(call.endReason)?.capitalizedFirst ?? "Call ended"
             }
         }
     }
@@ -63,6 +74,10 @@ struct CallView: View {
                 .frame(width: 72, height: 72).background(Circle().fill(color))
         }
     }
+}
+
+private extension String {
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
 /// Covers the app until it's unlocked: the cellosig password (if one is set),

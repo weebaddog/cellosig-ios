@@ -102,7 +102,7 @@ struct ChatView: View {
                 if !isGroup && c?.request != true {
                     Button {
                         guard guardTrust() else { return }
-                        calls.call(conv)
+                        calls.callSmart(conv)
                     } label: { Image(systemName: "phone") }
                     .disabled(calls.inCall || !m.connected)
                 }

@@ -63,6 +63,8 @@ final class Messenger: ObservableObject {
     /// New incoming message the user isn't looking at: (conversation, sender, preview).
     var onIncoming: ((String, String, String) -> Void)?
     var onCallSignal: ((String, CallSignal, Int64) -> Void)?
+    /// Phone-call signalling from the relay's bridge: (number, signal, network caller name, refusal reason).
+    var onPstnSignal: ((String, CallSignal, String?, String?) -> Void)?
 
     private var pendingBundles: [String: (ticket: UUID, waiters: [CheckedContinuation<ServedBundle, Error>])] = [:]
     private var pendingLookups: [CheckedContinuation<[String], Never>] = []
@@ -255,7 +257,8 @@ final class Messenger: ObservableObject {
         case "iceServers":
             if !pendingIce.isEmpty { pendingIce.removeFirst().c.resume(returning: f.iceServers ?? []) }
         case "pstn":
-            break  // calls with ordinary phones go through the Android app for now
+            // The relay's phone bridge: a call with an ordinary phone (number, signal, network caller name, refusal).
+            if let call = f.call { onPstnSignal?(f.from ?? f.to ?? "", call, f.callerName, f.error) }
         default: break
         }
     }
@@ -520,9 +523,18 @@ final class Messenger: ObservableObject {
         return (try? await sendPayload(peer, Payload(t: "call", call: sig), relayId: nil)) ?? false
     }
 
+    private struct PstnFrame: Encodable { var type = "pstn"; var to: String?; var call: CallSignal }
+
+    /// Signalling for a call with an ordinary phone, to the relay itself (it bridges
+    /// to the phone network). An offer carries the number to dial.
+    func sendPstnSignal(_ number: String, _ sig: CallSignal) -> Bool {
+        relay.send(PstnFrame(to: sig.kind == "offer" ? number : nil, call: sig))
+    }
+
     /// A call entry ("📞 Outgoing call · 1:23", "📞 Missed call") in the chat with `peer`.
-    func logCall(_ peer: String, outgoing: Bool, text: String, missed: Bool) {
-        let request = !outgoing && isRequest(peer, peer)
+    /// `phoneCall`: with an ordinary phone, so never a message request (you'd miss the missed call).
+    func logCall(_ peer: String, outgoing: Bool, text: String, missed: Bool, phoneCall: Bool = false) {
+        let request = !outgoing && !phoneCall && isRequest(peer, peer)
         try? db.run("INSERT INTO messages(conv, outgoing, body, ts, status, msgId) VALUES(?, ?, ?, ?, ?, ?)",
                     peer, outgoing, text, nowMs(), outgoing ? "sent" : "read", Self.systemPrefix + newId())
         touchConversation(peer, text, incoming: missed && activeChat != peer, request: request)

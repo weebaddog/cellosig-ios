@@ -42,7 +42,17 @@ final class CallManager: NSObject, ObservableObject {
         /// iOS refused to show this call through CallKit (it happens to sideloaded
         /// copies): it runs on our own call screen instead, with our own ringing.
         var kitless = false
+        /// A call with an ordinary phone, through the relay's bridge (NOT end-to-end encrypted).
+        var pstn = false
+        /// The phone network's name for an incoming caller, if the relay looked it up.
+        var networkName: String?
+        /// For a phone call we place: its audio link is up before they pick up, so
+        /// it only counts as answered once the relay says so.
+        var remoteAnswered = true
     }
+
+    /// The audio link is up (for a phone call, possibly before they answer).
+    private var mediaConnected = false
 
     @Published private(set) var state: State?
 
@@ -83,7 +93,7 @@ final class CallManager: NSObject, ObservableObject {
         cfg.supportsVideo = false
         cfg.maximumCallGroups = 1
         cfg.maximumCallsPerCallGroup = 1
-        cfg.supportedHandleTypes = [.generic]
+        cfg.supportedHandleTypes = [.generic, .phoneNumber]
         cfg.includesCallsInRecents = false   // keep who you talk to out of the Phone app's history
         provider = CXProvider(configuration: cfg)
         super.init()
@@ -110,14 +120,28 @@ final class CallManager: NSObject, ObservableObject {
 
     var inCall: Bool { state.map { $0.phase != .ended } ?? false }
 
+    /// The phone button in a chat: someone without cellosig can't take an app
+    /// call, so ring their phone instead (through the relay), if this account
+    /// may (as on Android).
+    func callSmart(_ peer: String) {
+        // (Offline, the lookup finds nobody: don't mistake that for "not on cellosig".)
+        guard let m = messenger, m.pstnAvailable, m.connected, !Messenger.isGroup(peer), peer.hasPrefix("+1") else { call(peer); return }
+        Task {
+            let onCellosig = await m.lookup([peer]).contains(peer)
+            call(peer, pstn: !onCellosig)
+        }
+    }
+
     // MARK: - User actions
 
     /// Place a call (CallKit then asks us to start it: see perform(start:)).
-    func call(_ peer: String) {
+    /// `pstn`: ring an ordinary phone through the relay's phone bridge.
+    func call(_ peer: String, pstn: Bool = false) {
         guard !inCall, placeholder == nil else { return }
-        let s = State(id: UUID().uuidString.lowercased(), uuid: UUID(), peer: peer, outgoing: true, phase: .calling)
+        let s = State(id: UUID().uuidString.lowercased(), uuid: UUID(), peer: peer, outgoing: true, phase: .calling,
+                      pstn: pstn, remoteAnswered: !pstn)
         state = s
-        let action = CXStartCallAction(call: s.uuid, handle: CXHandle(type: .generic, value: shownName(peer)))
+        let action = CXStartCallAction(call: s.uuid, handle: CXHandle(type: pstn ? .phoneNumber : .generic, value: pstn ? peer : shownName(peer)))
         controller.request(CXTransaction(action: action)) { error in
             guard let error else { return }
             Task { @MainActor in
@@ -174,31 +198,35 @@ final class CallManager: NSObject, ObservableObject {
 
     // MARK: - Signalling from the peer
 
-    func onSignal(_ from: String, _ sig: CallSignal, _ ts: Int64) {
+    /// Signalling for a call: from a cellosig contact (end to end), or with
+    /// `pstn` from the relay's phone bridge (`networkName`: the phone network's
+    /// caller name; `error`: why the relay refused a phone call).
+    func onSignal(_ from: String, _ sig: CallSignal, _ ts: Int64, pstn: Bool = false, networkName: String? = nil, error: String? = nil) {
         let s = state
-        log.info("call signal \(sig.kind, privacy: .public) from \(PhoneNumbers.mask(from), privacy: .public)")
+        log.info("call signal \(sig.kind, privacy: .public) from \(PhoneNumbers.mask(from), privacy: .public)\(pstn ? " (phone)" : "")")
+        if let error { log.warning("phone call refused by the relay: \(error, privacy: .public)") }
         switch sig.kind {
         case "offer":
             let waited = nowMs() - ts
             if waited > Self.staleOfferMs {
                 // They called while we were offline; the call is long over, but say so.
-                if waited < Self.missedLogMaxMs { messenger?.logCall(from, outgoing: false, text: "📞 Missed call", missed: true) }
+                if waited < Self.missedLogMaxMs { messenger?.logCall(from, outgoing: false, text: "📞 Missed call", missed: true, phoneCall: pstn) }
                 return
             }
             if let s, s.phase != .ended {
-                if s.id != sig.id { send(from, CallSignal(id: sig.id, kind: "busy")) }
+                if s.id != sig.id { send(from, CallSignal(id: sig.id, kind: "busy"), pstn: pstn) }
                 return
             }
-            // Lockdown mode: only contacts with a verified safety number may ring.
-            if Lockdown.on, messenger.map({ !$0.isVerified(from) || $0.trustBroken(from) }) ?? true {
-                send(from, CallSignal(id: sig.id, kind: "busy"))
-                messenger?.logCall(from, outgoing: false, text: "📞 Missed call (Lockdown mode: only verified contacts can call)", missed: true)
+            // Lockdown mode: only contacts with a verified safety number may ring (so no phone calls).
+            if Lockdown.on, pstn || messenger.map({ !$0.isVerified(from) || $0.trustBroken(from) }) ?? true {
+                send(from, CallSignal(id: sig.id, kind: "busy"), pstn: pstn)
+                messenger?.logCall(from, outgoing: false, text: "📞 Missed call (Lockdown mode: only verified contacts can call)", missed: true, phoneCall: pstn)
                 return
             }
             if let at = declinedPushAt, Date().timeIntervalSince(at) < 30 {
                 declinedPushAt = nil
-                send(from, CallSignal(id: sig.id, kind: "hangup", reason: "declined"))
-                messenger?.logCall(from, outgoing: false, text: "📞 Declined call", missed: false)
+                send(from, CallSignal(id: sig.id, kind: "hangup", reason: "declined"), pstn: pstn)
+                messenger?.logCall(from, outgoing: false, text: "📞 Declined call", missed: false, phoneCall: pstn)
                 return
             }
             guard let sdp = sig.sdp else { return }
@@ -206,8 +234,8 @@ final class CallManager: NSObject, ObservableObject {
             let uuid = placeholder ?? UUID()
             let adopting = placeholder != nil
             placeholder = nil
-            state = State(id: sig.id, uuid: uuid, peer: from, outgoing: false, phase: .incoming)
-            send(from, CallSignal(id: sig.id, kind: "ringing"))
+            state = State(id: sig.id, uuid: uuid, peer: from, outgoing: false, phase: .incoming, pstn: pstn, networkName: networkName)
+            send(from, CallSignal(id: sig.id, kind: "ringing"), pstn: pstn)
             if adopting {
                 provider.reportCall(with: uuid, updated: update(from))
                 if let a = pendingAnswer { pendingAnswer = nil; accept(a) }
@@ -233,11 +261,32 @@ final class CallManager: NSObject, ObservableObject {
             }
             armTimeout(sig.id) { $0.end(sig.id, "missed", notify: false) }
         default:
-            // Everything else must belong to the current call, from its peer.
-            guard let s, s.id == sig.id, s.peer == from, s.phase != .ended else { return }
+            // Everything else must belong to the current call, from its peer (the relay's
+            // replies about a phone call we placed carry the number we dialled).
+            guard let s, s.id == sig.id, s.pstn == pstn, s.peer == from || (pstn && from.isEmpty), s.phase != .ended else { return }
             switch sig.kind {
             case "ringing":
-                if s.phase == .calling { state?.phase = .ringing; startRingback() }
+                // A phone call brings the network's own ringback over the audio link.
+                if s.phase == .calling { state?.phase = .ringing; if !s.pstn { startRingback() } }
+            case "progress":
+                // Calling a phone: the relay's side of the audio link, so it connects while it rings.
+                guard s.pstn, s.outgoing, s.phase == .calling || s.phase == .ringing, let conn = pc, let sdp = sig.sdp else { return }
+                Task {
+                    do { try await conn.setRemote(RTCSessionDescription(type: .answer, sdp: sdp)) }
+                    catch { self.end(s.id, "failed", notify: true, signal: "failed") }
+                }
+            case "answer" where s.pstn && sig.sdp == nil:
+                // The phone was picked up.
+                timeout?.cancel()
+                state?.remoteAnswered = true
+                if mediaConnected {
+                    state?.phase = .active
+                    state?.connectedAt = Date()
+                    if !s.kitless { provider.reportOutgoingCall(with: s.uuid, connectedAt: Date()) }
+                } else {
+                    state?.phase = .connecting
+                    armTimeout(s.id) { $0.end(s.id, "failed", notify: true, signal: "failed") }
+                }
             case "answer":
                 guard let conn = pc, let sdp = sig.sdp else { return }
                 timeout?.cancel()
@@ -250,7 +299,7 @@ final class CallManager: NSObject, ObservableObject {
                     self.armTimeout(s.id) { $0.end(s.id, "failed", notify: true, signal: "failed") }
                 }
             case "busy": end(s.id, "busy", notify: false)
-            case "hangup": end(s.id, sig.reason ?? "ended", notify: false)
+            case "hangup": end(s.id, error ?? sig.reason ?? "ended", notify: false)
             default: break
             }
         }
@@ -277,10 +326,10 @@ final class CallManager: NSObject, ObservableObject {
                 let offer = try await conn.makeOffer()
                 try await conn.setLocal(offer)
                 await self.awaitGathering()
-                guard self.isCurrent(s.id), let sdp = conn.localDescription?.sdp else { return }
-                guard await self.messenger?.sendCallSignal(s.peer, CallSignal(id: s.id, kind: "offer", sdp: sdp)) == true else {
-                    self.end(s.id, "failed", notify: false); return
-                }
+                guard self.isCurrent(s.id), let sdp = conn.localDescription?.sdp, let m = self.messenger else { return }
+                let offer = CallSignal(id: s.id, kind: "offer", sdp: sdp)
+                let sent = s.pstn ? m.sendPstnSignal(s.peer, offer) : await m.sendCallSignal(s.peer, offer)
+                guard sent else { self.end(s.id, "failed", notify: false); return }
                 self.armTimeout(s.id) { $0.end(s.id, "no_answer", notify: true, signal: "missed") }
             } catch {
                 self.end(s.id, "failed", notify: false)
@@ -315,7 +364,7 @@ final class CallManager: NSObject, ObservableObject {
                 try await conn.setLocal(answer)
                 await self.awaitGathering()
                 guard self.isCurrent(s.id), let sdp = conn.localDescription?.sdp else { return }
-                _ = await self.messenger?.sendCallSignal(s.peer, CallSignal(id: s.id, kind: "answer", sdp: sdp))
+                self.send(s.peer, CallSignal(id: s.id, kind: "answer", sdp: sdp), pstn: s.pstn)
                 // If media never connects, don't sit on "Connecting…" forever.
                 self.armTimeout(s.id) { $0.end(s.id, "failed", notify: true, signal: "failed") }
             } catch {
@@ -495,6 +544,7 @@ final class CallManager: NSObject, ObservableObject {
             config.iceTransportPolicy = .relay
         }
         gatherDone = false
+        mediaConnected = false
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         guard let conn = factory.peerConnection(with: config, constraints: constraints, delegate: self) else { throw CallError.setup }
         let source = factory.audioSource(with: constraints)
@@ -526,11 +576,13 @@ final class CallManager: NSObject, ObservableObject {
         guard conn === pc, let s = state else { return }
         switch newState {
         case .connected:
-            guard s.phase != .active else { return }
+            mediaConnected = true
+            // A phone call that's still ringing: the link is ready, but nobody picked up yet.
+            guard s.phase != .active, s.remoteAnswered else { return }
             timeout?.cancel()
             state?.phase = .active
             state?.connectedAt = Date()
-            if s.outgoing { provider.reportOutgoingCall(with: s.uuid, connectedAt: Date()) }
+            if s.outgoing && !s.kitless { provider.reportOutgoingCall(with: s.uuid, connectedAt: Date()) }
         case .failed:
             end(s.id, "failed", notify: true, signal: "failed")
         default: break
@@ -543,7 +595,7 @@ final class CallManager: NSObject, ObservableObject {
         guard let s = state, s.id == id, s.phase != .ended else { return }
         log.info("call ended: \(reason, privacy: .public)")
         timeout?.cancel()
-        if notify, let signal { send(s.peer, CallSignal(id: id, kind: "hangup", reason: signal)) }
+        if notify, let signal { send(s.peer, CallSignal(id: id, kind: "hangup", reason: signal), pstn: s.pstn) }
         stopRingback()
         if s.kitless {
             stopRinging()
@@ -584,9 +636,20 @@ final class CallManager: NSObject, ObservableObject {
         else if s.outgoing && reason == "busy" { text = "📞 Outgoing call · busy" }
         else if s.outgoing && reason == "declined" { text = "📞 Outgoing call · declined" }
         else if s.outgoing && reason == "no_microphone" { text = "📞 Call not placed · microphone access is off (Settings → cellosig)" }
+        else if s.outgoing, let why = Self.phoneRefusal(reason) { text = "📞 Call not placed · \(why)" }
         else if s.outgoing { text = "📞 Outgoing call · no answer" }
         else { text = "📞 Missed call" }
-        messenger?.logCall(s.peer, outgoing: s.outgoing, text: text, missed: !s.outgoing && duration == nil && reason != "declined")
+        messenger?.logCall(s.peer, outgoing: s.outgoing, text: text, missed: !s.outgoing && duration == nil && reason != "declined", phoneCall: s.pstn)
+    }
+
+    /// Why the relay wouldn't place a phone call, in words (nil: not a refusal).
+    static func phoneRefusal(_ reason: String?) -> String? {
+        switch reason {
+        case "not_allowed": return "phone calls aren't set up for this account"
+        case "destination_not_allowed": return "that number can't be called (premium or not allowed)"
+        case "not_configured", "unavailable": return "the relay's phone line isn't available"
+        default: return nil
+        }
     }
 
     static func formatDuration(_ seconds: Int) -> String { String(format: "%d:%02d", seconds / 60, seconds % 60) }
@@ -600,7 +663,9 @@ final class CallManager: NSObject, ObservableObject {
         }
     }
 
-    private func send(_ peer: String, _ sig: CallSignal) {
+    /// To a cellosig contact (end to end), or for a phone call to the relay's bridge.
+    private func send(_ peer: String, _ sig: CallSignal, pstn: Bool = false) {
+        if pstn { _ = messenger?.sendPstnSignal(peer, sig); return }
         Task { _ = await messenger?.sendCallSignal(peer, sig) }
     }
 
@@ -609,6 +674,8 @@ final class CallManager: NSObject, ObservableObject {
     /// What the system call screen shows. The caller's name only if notifications may show names.
     private func shownName(_ peer: String?) -> String {
         guard let peer, Shared.defaults.bool(forKey: "notify_preview") else { return "cellosig" }
+        // A phone call: the network's caller name if there is one (it isn't in your cellosig chats).
+        if let s = state, s.pstn, s.peer == peer, let n = s.networkName, messenger?.hasProfileName(peer) != true { return n }
         return messenger?.displayName(peer) ?? PhoneNumbers.pretty(peer)
     }
 

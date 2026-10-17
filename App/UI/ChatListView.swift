@@ -264,6 +264,15 @@ struct NewChatView: View {
                     }
                     Button(groupMode ? "Add" : (busy ? "Checking…" : "Start chat")) { go() }.disabled(number.isEmpty || busy)
                 }
+                // Calling an ordinary phone (through the relay's phone bridge), when this account may.
+                if !groupMode && m.pstnAvailable {
+                    Section {
+                        Button { callPhone() } label: { Label("Call this number (regular phone call)", systemImage: "phone") }
+                            .disabled(number.isEmpty)
+                    } footer: {
+                        Text("Rings any phone, even without cellosig. Goes through your relay and the phone network, so it isn't end-to-end encrypted. US and Canadian numbers only.")
+                    }
+                }
                 ContactsSection { p in
                     if groupMode {
                         if !members.contains(p) { members.append(p) }
@@ -289,6 +298,14 @@ struct NewChatView: View {
             .navigationTitle(groupMode ? "New group" : "New chat")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
+    }
+
+    private func callPhone() {
+        guard let p = PhoneNumbers.normalize(number, countryCode: country) else { status = "Enter a full phone number."; return }
+        guard p != m.me else { status = "That's your own number."; return }
+        guard p.hasPrefix("+1") else { status = "Phone calls only go to US and Canadian numbers."; return }
+        dismiss()
+        CallManager.shared.call(p, pstn: true)
     }
 
     private func go() {

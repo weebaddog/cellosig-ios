@@ -110,6 +110,9 @@ final class AppModel: ObservableObject {
             let m = try Messenger(account: account)
             m.onIncoming = { [weak self] conv, sender, preview in self?.notify(conv: conv, sender: sender, preview: preview) }
             m.onCallSignal = { from, sig, ts in CallManager.shared.onSignal(from, sig, ts) }
+            m.onPstnSignal = { number, sig, name, error in
+                CallManager.shared.onSignal(number, sig, nowMs(), pstn: true, networkName: name, error: error)
+            }
             m.start()
             messenger = m
             ExtensionBridge.shared.attach(m)
