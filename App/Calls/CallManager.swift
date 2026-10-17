@@ -231,10 +231,11 @@ final class CallManager: NSObject, ObservableObject {
             guard let s, s.id == sig.id, s.peer == from, s.phase != .ended else { return }
             switch sig.kind {
             case "ringing":
-                if s.phase == .calling { state?.phase = .ringing }
+                if s.phase == .calling { state?.phase = .ringing; startRingback() }
             case "answer":
                 guard let conn = pc, let sdp = sig.sdp else { return }
                 timeout?.cancel()
+                stopRingback()
                 state?.phase = .connecting
                 provider.reportOutgoingCall(with: s.uuid, startedConnectingAt: Date())
                 Task {
@@ -390,19 +391,49 @@ final class CallManager: NSObject, ObservableObject {
             c.interruptionLevel = .timeSensitive
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.ringNotificationId, content: c, trigger: nil))
         }
+        // A real ringtone at full volume (the system alert sound was too quiet to notice).
+        KeepAlive.shared.stop()
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default)
+        try? session.setActive(true)
+        ringPlayer = try? AVAudioPlayer(data: Tones.ring)
+        ringPlayer?.numberOfLoops = -1
+        ringPlayer?.volume = 1
+        ringPlayer?.play()
         ringer = Task {
             while !Task.isCancelled {
-                AudioServicesPlayAlertSound(SystemSoundID(1005))
                 AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
 
+    private var ringPlayer: AVAudioPlayer?
+
     private func stopRinging() {
         ringer?.cancel()
         ringer = nil
+        if ringPlayer != nil {
+            ringPlayer?.stop()
+            ringPlayer = nil
+        }
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.ringNotificationId])
+    }
+
+    /// "Ring… ring…" for the caller while the other phone rings (through the call's audio, like a phone call).
+    private var ringbackPlayer: AVAudioPlayer?
+
+    private func startRingback() {
+        stopRingback()
+        ringbackPlayer = try? AVAudioPlayer(data: Tones.ringback)
+        ringbackPlayer?.numberOfLoops = -1
+        ringbackPlayer?.volume = 0.8
+        ringbackPlayer?.play()
+    }
+
+    private func stopRingback() {
+        ringbackPlayer?.stop()
+        ringbackPlayer = nil
     }
 
     // MARK: - VoIP push
@@ -507,6 +538,7 @@ final class CallManager: NSObject, ObservableObject {
         log.info("call ended: \(reason, privacy: .public)")
         timeout?.cancel()
         if notify, let signal { send(s.peer, CallSignal(id: id, kind: "hangup", reason: signal)) }
+        stopRingback()
         if s.kitless {
             stopRinging()
             if s.phase != .incoming { deactivateAudioManually() }
@@ -520,6 +552,8 @@ final class CallManager: NSObject, ObservableObject {
         gatheringFinished()
         state?.phase = .ended
         state?.endReason = reason
+        // Without CallKit nothing else hands the audio back: keep this copy reachable again.
+        if s.kitless { KeepAlive.shared.start() }
         logCall(s, reason)
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)   // let the call screen show "Call ended" briefly
