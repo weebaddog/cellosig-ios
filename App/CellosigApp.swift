@@ -267,10 +267,11 @@ struct RootView: View {
         ZStack {
             if let m = model.messenger {
                 ChatListView().environmentObject(m)
+                if model.locked { LockView() }
+                // Above the lock: a call can be answered without unlocking (it shows only the caller, not your chats).
                 if let call = calls.state {
                     CallView(call: call).environmentObject(m).transition(.move(edge: .bottom))
                 }
-                if model.locked { LockView() }
             } else {
                 SetupView()
             }

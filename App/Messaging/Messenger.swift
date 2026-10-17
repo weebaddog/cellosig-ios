@@ -67,7 +67,7 @@ final class Messenger: ObservableObject {
     var onPstnSignal: ((String, CallSignal, String?, String?) -> Void)?
 
     private var pendingBundles: [String: (ticket: UUID, waiters: [CheckedContinuation<ServedBundle, Error>])] = [:]
-    private var pendingLookups: [CheckedContinuation<[String], Never>] = []
+    private var pendingLookups: [(ticket: UUID, c: CheckedContinuation<[String], Never>)] = []
     private var pendingIce: [(ticket: UUID, c: CheckedContinuation<[IceServer], Never>)] = []
     private var pendingSealed: [String: (peer: String, row: Int64?)] = [:]
     private var lastResetRequest: [String: Int64] = [:]
@@ -76,7 +76,7 @@ final class Messenger: ObservableObject {
     private var certWaiters: [CheckedContinuation<Void, Never>] = []
     private var expiryTimer: Timer?
 
-    enum SendError: Error { case notRegistered(String), timeout, toSelf, noSession }
+    enum SendError: Error { case notRegistered(String), timeout, toSelf, noSession, offline }
 
     init(account: Account, extensionMode: Bool = false) throws {
         self.account = account
@@ -236,7 +236,7 @@ final class Messenger: ObservableObject {
         case "preKeysLow", "preKeyCount":
             replenishPreKeys(f.count ?? 0)
         case "lookupResult":
-            if !pendingLookups.isEmpty { pendingLookups.removeFirst().resume(returning: f.registered ?? []) }
+            if !pendingLookups.isEmpty { pendingLookups.removeFirst().c.resume(returning: f.registered ?? []) }
         case "senderCert":
             if let cert = f.cert, let key = f.serverKey, let raw = try? Primitives.unb64(key), raw.count == 32 {
                 senderCert = cert
@@ -414,6 +414,9 @@ final class Messenger: ObservableObject {
     @discardableResult
     private func sendPayload(_ peer: String, _ payload: Payload, relayId: String?, fresh: Bool = false) async throws -> Bool {
         guard peer != me else { throw SendError.toSelf }
+        // Offline: fail now, before encrypting — every encryption advances the session,
+        // and a message that never leaves would just leave a gap the other side must skip.
+        guard relay.isConnected else { throw SendError.offline }
         pendingOps += 1
         defer { pendingOps -= 1; lastActivity = Date() }
         let bundle = (fresh || !sessions.has(peer)) ? try await fetchBundle(peer) : nil
@@ -492,11 +495,17 @@ final class Messenger: ObservableObject {
     }
 
     /// Which of these numbers use cellosig.
+    /// (Gives up after 10 s: if the connection drops meanwhile, the answer never comes.)
     func lookup(_ phones: [String]) async -> [String] {
         guard relay.isConnected else { return [] }
         return await withCheckedContinuation { c in
-            pendingLookups.append(c)
+            let ticket = UUID()
+            pendingLookups.append((ticket, c))
             relay.send(Lookup(phones: Array(phones.prefix(1000))))
+            Task {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if let i = self.pendingLookups.firstIndex(where: { $0.ticket == ticket }) { self.pendingLookups.remove(at: i).c.resume(returning: []) }
+            }
         }
     }
 
@@ -545,8 +554,10 @@ final class Messenger: ObservableObject {
 
     func retryUnsent() async {
         let rows = (try? db.query("""
-            SELECT * FROM messages WHERE outgoing = 1 AND status IN ('sending','failed') AND ts < ? AND ts > ? AND msgId != '' AND deleted = 0
+            SELECT * FROM messages WHERE outgoing = 1 AND (status = 'failed' OR (status = 'sending' AND ts < ?))
+              AND ts > ? AND msgId != '' AND deleted = 0
             """, nowMs() - 30_000, nowMs() - Self.autoRetryWindowMs)) ?? []
+        // (Failed ones go again at once; "sending" ones only once clearly stuck — inFlight guards the rest.)
         for r in rows { await resend(Message(row: r)) }
     }
 
@@ -1069,6 +1080,23 @@ final class Messenger: ObservableObject {
 
     func messages(_ conv: String) -> [Message] {
         ((try? db.query("SELECT * FROM messages WHERE conv = ? ORDER BY ts, id", conv)) ?? []).map(Message.init(row:))
+    }
+
+    /// The latest `limit` messages, oldest first (a long chat isn't reloaded whole on every change).
+    func messages(_ conv: String, limit: Int) -> [Message] {
+        ((try? db.query("""
+            SELECT * FROM (SELECT * FROM messages WHERE conv = ? ORDER BY ts DESC, id DESC LIMIT ?) ORDER BY ts, id
+            """, conv, limit)) ?? []).map(Message.init(row:))
+    }
+
+    func messageCount(_ conv: String) -> Int {
+        Int((try? db.scalarInt("SELECT COUNT(*) FROM messages WHERE conv = ?", conv)) ?? 0)
+    }
+
+    /// How many messages from this one to the newest (to show enough of the chat to reach it).
+    func messagesSince(_ conv: String, row: Int64) -> Int {
+        guard let r = try? db.query("SELECT ts FROM messages WHERE id = ?", row).first, let ts = r.int("ts") else { return 0 }
+        return Int((try? db.scalarInt("SELECT COUNT(*) FROM messages WHERE conv = ? AND (ts > ? OR (ts = ? AND id >= ?))", conv, ts, ts, row)) ?? 0)
     }
 
     func messageIn(_ conv: String, _ msgId: String) -> Message? {

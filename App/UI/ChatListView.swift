@@ -14,6 +14,7 @@ struct ChatListView: View {
     @State private var showNew = false
     @State private var showSettings = false
     @State private var query = ""
+    @State private var deleting: String?
 
     var body: some View {
         let _ = m.revision
@@ -42,6 +43,10 @@ struct ChatListView: View {
                 NewChatView { conv in showNew = false; path = [ChatRoute(conv: conv)] }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .confirmationDialog("Delete this chat?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                                titleVisibility: .visible) {
+                Button("Delete chat", role: .destructive) { if let d = deleting { m.deleteConversation(d) }; deleting = nil }
+            } message: { Text("All of its messages and files are erased from this iPhone. It can't be undone.") }
             .onAppear(perform: openTapped)
             .onChange(of: model.openConversation) { _ in openTapped() }
         }
@@ -67,8 +72,9 @@ struct ChatListView: View {
                 }
                 ForEach(convs) { c in
                     NavigationLink(value: ChatRoute(conv: c.id)) { ConversationRow(c: c) }
-                        .swipeActions {
-                            Button(role: .destructive) { m.deleteConversation(c.id) } label: { Label("Delete", systemImage: "trash") }
+                        // (Not role: .destructive: that deletes on a full swipe before you can confirm.)
+                        .swipeActions(allowsFullSwipe: false) {
+                            Button { deleting = c.id } label: { Label("Delete", systemImage: "trash") }.tint(.red)
                             Button { m.setPinned(c.id, c.pinnedAt == nil) } label: {
                                 Label(c.pinnedAt == nil ? "Pin" : "Unpin", systemImage: c.pinnedAt == nil ? "pin" : "pin.slash")
                             }.tint(.orange)

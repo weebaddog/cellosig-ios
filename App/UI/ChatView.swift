@@ -10,9 +10,14 @@ struct ChatView: View {
     /// Open scrolled to this message (from search), briefly highlighted.
     var focus: Int64? = nil
     @State private var highlight: Int64?
+    /// How many of the latest messages are loaded ("Show earlier messages" adds more).
+    @State private var limit = 300
+    /// The newest message is on screen: new ones scroll into view (otherwise you're reading back; stay put).
+    @State private var atBottom = true
     @State private var editing: Message?
     @State private var editText = ""
     @State private var unsending: Message?
+    @State private var confirmDelete = false
     @State private var draft = ""
     @State private var photo: PhotosPickerItem?
     @State private var showFiles = false
@@ -30,17 +35,24 @@ struct ChatView: View {
 
     var body: some View {
         let _ = m.revision
-        let msgs = m.messages(conv)
+        let msgs = m.messages(conv, limit: limit)
+        let total = m.messageCount(conv)
         let c = m.conversation(conv)
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 6) {
+                        if total > msgs.count {
+                            Button("Show earlier messages") { limit += 300 }
+                                .font(.footnote).buttonStyle(.bordered).padding(.bottom, 4)
+                        }
                         let reminders = Dictionary(grouping: m.reminders(conv: conv), by: { $0.msgRow ?? -1 })
                         ForEach(msgs) { msg in
                             MessageRow(msg: msg, conv: conv, share: $share, remind: $remind, reminders: reminders[msg.id] ?? [],
                                        highlighted: highlight == msg.id,
                                        edit: { editText = $0.body; editing = $0 }, unsend: { unsending = $0 }).id(msg.id)
+                                .onAppear { if msg.id == msgs.last?.id { atBottom = true } }
+                                .onDisappear { if msg.id == msgs.last?.id { atBottom = false } }
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 8)
@@ -48,15 +60,25 @@ struct ChatView: View {
                 .background(ChatWallpaper().ignoresSafeArea(edges: .bottom))
                 .scrollDismissesKeyboard(.interactively)
                 .onAppear {
-                    if let focus, msgs.contains(where: { $0.id == focus }) {
-                        proxy.scrollTo(focus, anchor: .center)
-                        highlight = focus
-                        Task { try? await Task.sleep(nanoseconds: 2_000_000_000); withAnimation { highlight = nil } }
+                    if let focus {
+                        // From search: load far enough back to reach it, then show it.
+                        limit = max(limit, m.messagesSince(conv, row: focus) + 20)
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            proxy.scrollTo(focus, anchor: .center)
+                            highlight = focus
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            withAnimation { highlight = nil }
+                        }
                     } else {
                         proxy.scrollTo(msgs.last?.id, anchor: .bottom)
                     }
                 }
-                .onChange(of: msgs.count) { _ in withAnimation { proxy.scrollTo(msgs.last?.id, anchor: .bottom) } }
+                // A new message: follow it if you were at the bottom (or sent it); don't yank you out of history.
+                .onChange(of: msgs.last?.id) { _ in
+                    guard let last = msgs.last, atBottom || last.outgoing else { return }
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
             }
             if c?.request == true {
                 RequestBar(conv: conv) { dismiss() }
@@ -116,7 +138,7 @@ struct ChatView: View {
                     if !isGroup {
                         Button(role: .destructive) { m.block(conv); dismiss() } label: { Label("Block", systemImage: "hand.raised") }
                     }
-                    Button(role: .destructive) { m.deleteConversation(conv); dismiss() } label: { Label("Delete chat", systemImage: "trash") }
+                    Button(role: .destructive) { confirmDelete = true } label: { Label("Delete chat", systemImage: "trash") }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
@@ -127,6 +149,11 @@ struct ChatView: View {
         }
         .sheet(item: $remind) { msg in ReminderSheet(msg: msg).presentationDetents([.medium]) }
         .sheet(item: $share) { url in ShareSheet(items: [url]) }
+        // The decrypted copy made for sharing goes as soon as the share sheet closes
+        // (the app now keeps running for days, so "on next launch" was too late).
+        .onChange(of: share) { old, new in
+            if new == nil, let old { try? FileManager.default.removeItem(at: old) }
+        }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
             let scoped = url.startAccessingSecurityScopedResource()
@@ -171,12 +198,15 @@ struct ChatView: View {
                 unsending = nil
             }
         } message: { Text("The message is removed from everyone's phone in this chat. They see that a message was deleted.") }
+        .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete chat", role: .destructive) { m.deleteConversation(conv); dismiss() }
+        } message: { Text("All of its messages and files are erased from this iPhone. It can't be undone.") }
         .onAppear { m.activeChat = conv; Task { await m.markRead(conv) } }
         .onDisappear {
             if m.activeChat == conv { m.activeChat = nil }
             if recorder.recording { recorder.cancel() }   // don't keep the microphone on after leaving
         }
-        .onChange(of: msgs.count) { _ in Task { await m.markRead(conv) } }
+        .onChange(of: msgs.last?.id) { _ in Task { await m.markRead(conv) } }
     }
 
     @ViewBuilder private var inputBar: some View {
@@ -244,7 +274,8 @@ struct ChatView: View {
         guard guardTrust() else { return }
         Task {
             do { try await m.sendFile(conv, data: data, name: name, mime: mime, kind: kind) }
-            catch { self.error = "That file is too large (90 MB max)." }
+            catch ChunkedAead.Failure.tooLarge { self.error = "That file is too large (90 MB max)." }
+            catch { self.error = "Couldn't prepare that file to send (is the iPhone's storage full?)." }
         }
     }
 }
