@@ -33,13 +33,23 @@ struct ChatView: View {
 
     private var isGroup: Bool { Messenger.isGroup(conv) }
 
+    // (Split into pieces: as one expression it was too big for the compiler to type-check.)
     var body: some View {
         let _ = m.revision
         let msgs = m.messages(conv, limit: limit)
-        let total = m.messageCount(conv)
         let c = m.conversation(conv)
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
+        let screen = messageList(msgs, c)
+            .navigationTitle(m.title(conv))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarItems(c) }
+        return withLifecycle(withDialogs(withSheets(screen)), msgs)
+    }
+
+    /// The messages, with the input bar floating over their bottom edge
+    /// (Liquid Glass on iOS 26: the chat scrolls on behind it).
+    private func messageList(_ msgs: [Message], _ c: Conversation?) -> some View {
+        let total = m.messageCount(conv)
+        return ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 6) {
                         if total > msgs.count {
@@ -79,16 +89,18 @@ struct ChatView: View {
                     guard let last = msgs.last, atBottom || last.outgoing else { return }
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
-            }
-            if c?.request == true {
-                RequestBar(conv: conv) { dismiss() }
-            } else {
-                inputBar
-            }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if c?.request == true {
+                        RequestBar(conv: conv) { dismiss() }
+                    } else {
+                        inputBar
+                    }
+                }
         }
-        .navigationTitle(m.title(conv))
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
+    }
+
+    @ToolbarContentBuilder
+    private func toolbarItems(_ c: Conversation?) -> some ToolbarContent {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
                     Text(m.title(conv)).font(.headline).lineLimit(1)
@@ -141,7 +153,10 @@ struct ChatView: View {
                     Button(role: .destructive) { confirmDelete = true } label: { Label("Delete chat", systemImage: "trash") }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
-        }
+    }
+
+    private func withSheets(_ v: some View) -> some View {
+        v
         .sheet(isPresented: $showSafety) { SafetyNumberView(peer: conv) }
         .sheet(isPresented: $showPoll) { PollComposer(conv: conv) }
         .sheet(isPresented: $showStickers) {
@@ -182,6 +197,10 @@ struct ChatView: View {
                 send(data: data, name: "photo.\(ext)", mime: mime)
             }
         }
+    }
+
+    private func withDialogs(_ v: some View) -> some View {
+        v
         .alert("cellosig", isPresented: .constant(error != nil)) { Button("OK") { error = nil } } message: { Text(error ?? "") }
         .alert("Edit message", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
             TextField("Message", text: $editText, axis: .vertical).autocorrectionDisabled()
@@ -201,6 +220,10 @@ struct ChatView: View {
         .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete chat", role: .destructive) { m.deleteConversation(conv); dismiss() }
         } message: { Text("All of its messages and files are erased from this iPhone. It can't be undone.") }
+    }
+
+    private func withLifecycle(_ v: some View, _ msgs: [Message]) -> some View {
+        v
         .onAppear { m.activeChat = conv; Task { await m.markRead(conv) } }
         .onDisappear {
             if m.activeChat == conv { m.activeChat = nil }
@@ -224,7 +247,8 @@ struct ChatView: View {
                 } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(.bar)
+            .liquidGlass(in: Capsule(), fallback: .bar)
+            .padding(.horizontal, Glass26.on ? 10 : 0).padding(.bottom, Glass26.on ? 6 : 0)
         } else {
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
@@ -233,7 +257,11 @@ struct ChatView: View {
                     Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
                     Button { showPoll = true } label: { Label("Poll", systemImage: "chart.bar") }
                 } label: {
-                    Image(systemName: "plus.circle.fill").font(.title2)
+                    if Glass26.on {
+                        Image(systemName: "plus").font(.title3.weight(.semibold)).frame(width: 40, height: 40).liquidGlass(in: Circle())
+                    } else {
+                        Image(systemName: "plus.circle.fill").font(.title2)
+                    }
                 }
                 TextField("Message", text: $draft, axis: .vertical)
                     .lineLimit(1...5)
@@ -241,20 +269,34 @@ struct ChatView: View {
                     .textInputAutocapitalization(.sentences)
                     .keyboardType(.default)
                     .focused($focused)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 18).fill(Color(.secondarySystemBackground)))
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .liquidGlass(in: RoundedRectangle(cornerRadius: 20), fallback: Color(.secondarySystemBackground))
                     .onSubmit(sendText)
                 if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button {
                         guard guardTrust() else { return }
                         Task { if !(await recorder.start()) { error = "Can't record. Allow the microphone in Settings → cellosig (and not during a call)." } }
-                    } label: { Image(systemName: "mic.circle.fill").font(.title) }
+                    } label: {
+                        if Glass26.on {
+                            Image(systemName: "mic").font(.title3.weight(.semibold)).frame(width: 40, height: 40).liquidGlass(in: Circle())
+                        } else {
+                            Image(systemName: "mic.circle.fill").font(.title)
+                        }
+                    }
                 } else {
-                    Button(action: sendText) { Image(systemName: "arrow.up.circle.fill").font(.title) }
+                    Button(action: sendText) {
+                        if Glass26.on {
+                            Image(systemName: "arrow.up").font(.title3.weight(.bold)).foregroundStyle(.white)
+                                .frame(width: 40, height: 40).liquidGlass(in: Circle(), tint: .accentColor)
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill").font(.title)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(.bar)
+            // iOS 26: the controls float as glass over the chat; before that, the usual bar.
+            .background(Glass26.on ? AnyShapeStyle(Color.clear) : AnyShapeStyle(.bar))
         }
     }
 

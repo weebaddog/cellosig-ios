@@ -70,8 +70,9 @@ struct CallView: View {
 
     private func round(_ icon: String, _ color: Color, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
+            // Tinted Liquid Glass on iOS 26 (a plain coloured circle before).
             Image(systemName: icon).font(.system(size: 26)).foregroundStyle(.white)
-                .frame(width: 72, height: 72).background(Circle().fill(color))
+                .frame(width: 72, height: 72).liquidGlass(in: Circle(), tint: color)
         }
     }
 }
