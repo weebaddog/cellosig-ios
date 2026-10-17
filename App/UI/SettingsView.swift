@@ -46,6 +46,7 @@ struct SettingsView: View {
     @State private var name = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var confirmDelete = false
+    @State private var lockError = false
     @AppStorage("notify_preview", store: Shared.defaults) private var notifyPreview = false
 
     var body: some View {
@@ -66,6 +67,25 @@ struct SettingsView: View {
                 Section("Privacy") {
                     Toggle("Send read receipts", isOn: Binding(get: { m.readReceipts }, set: { m.readReceipts = $0 }))
                     Toggle("Show sender and message in notifications", isOn: $notifyPreview)
+                }
+                Section {
+                    Toggle("Lock with Face ID or passcode", isOn: Binding(get: { model.lockEnabled }, set: { on in
+                        Task { if !(await model.setLock(on)) { lockError = true } }
+                    }))
+                } header: { Text("App lock") } footer: {
+                    Text("Locks cellosig whenever you leave it. Calls still ring on the lock screen.")
+                }
+                let reminders = m.reminders()
+                if !reminders.isEmpty {
+                    Section("Reminders") {
+                        ForEach(reminders) { r in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(TimeParser.label(r.at)).font(.subheadline.bold())
+                                Text("\(m.title(r.conv)): \(r.text)").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            .swipeActions { Button("Cancel", role: .destructive) { m.cancelReminder(r.id) } }
+                        }
+                    }
                 }
                 let blocked = m.blockedList()
                 if !blocked.isEmpty {
@@ -101,6 +121,9 @@ struct SettingsView: View {
                     Task { await m.deleteAccount(); model.erased() }
                 }
             } message: { Text("This can't be undone.") }
+            .alert("App lock", isPresented: $lockError) { Button("OK") {} } message: {
+                Text("Couldn't turn the lock on. This iPhone needs a passcode (Settings → Face ID & Passcode), and you need to confirm it once.")
+            }
         }
     }
 

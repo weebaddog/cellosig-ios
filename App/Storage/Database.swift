@@ -49,6 +49,13 @@ final class Database {
             PRAGMA user_version = 1;
             """)
         }
+        if version < 2 {
+            // Message reminders (the notification itself is scheduled with iOS under the same id).
+            try exec("""
+            CREATE TABLE IF NOT EXISTS reminders(id TEXT PRIMARY KEY, conv TEXT NOT NULL, msgRow INTEGER, text TEXT NOT NULL, at INTEGER NOT NULL);
+            PRAGMA user_version = 2;
+            """)
+        }
     }
 
     // MARK: Primitives

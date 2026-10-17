@@ -66,6 +66,7 @@ final class Messenger: ObservableObject {
 
     private var pendingBundles: [String: (ticket: UUID, waiters: [CheckedContinuation<ServedBundle, Error>])] = [:]
     private var pendingLookups: [CheckedContinuation<[String], Never>] = []
+    private var pendingIce: [(ticket: UUID, c: CheckedContinuation<[IceServer], Never>)] = []
     private var pendingSealed: [String: (peer: String, row: Int64?)] = [:]
     private var lastResetRequest: [String: Int64] = [:]
     private var inFlight = Set<Int64>()
@@ -127,12 +128,33 @@ final class Messenger: ObservableObject {
 
     // MARK: - Push notifications
 
-    private struct SetPush: Encodable { var type = "setPush"; var token: String; var env: String }
+    private struct SetPush: Encodable { var type = "setPush"; var token: String; var env: String; var voip: String? }
+
+    private func sendPushTokens() {
+        guard relay.isConnected, let t = Shared.defaults.string(forKey: "apns_token") else { return }
+        relay.send(SetPush(token: t, env: Self.pushEnv, voip: Shared.defaults.string(forKey: "voip_token")))
+    }
 
     /// The APNs device token (hex) for this iPhone; the relay uses it to wake us.
     func setPushToken(_ hex: String) {
         Shared.defaults.set(hex, forKey: "apns_token")
-        if relay.isConnected { relay.send(SetPush(token: hex, env: Self.pushEnv)) }
+        sendPushTokens()
+    }
+
+    /// The PushKit token: the relay rings us with it when a call comes in.
+    func setVoipToken(_ hex: String) {
+        Shared.defaults.set(hex, forKey: "voip_token")
+        sendPushTokens()
+    }
+
+    /// A VoIP push woke us for a call: get a fresh connection (the old socket
+    /// may have died while we were suspended) and collect what's waiting.
+    func wakeForCall() {
+        loggedIn = false
+        lastActivity = Date()
+        relay.close()
+        relay.connect()
+        sealedRelay.reconnectNow()
     }
 
     // For the extension: when has the relay finished handing us mail?
@@ -162,8 +184,9 @@ final class Messenger: ObservableObject {
     private struct Received: Encodable { var type = "received"; var mid: Int64 }
     private struct GetBundle: Encodable { var type = "getBundle"; var username: String }
     private struct Lookup: Encodable { var type = "lookup"; var phones: [String] }
-    private struct SendFrame: Encodable { var type = "send"; var to: String; var envelope: Envelope; var id: String?; var eph: Bool? }
-    private struct SendSealed: Encodable { var type = "sendSealed"; var to: String; var ak: String; var sealed: SealedSender.Box; var id: String; var eph: Bool? }
+    // call: a call offer, so the relay can ring an iPhone through VoIP push (it can't read the message).
+    private struct SendFrame: Encodable { var type = "send"; var to: String; var envelope: Envelope; var id: String?; var eph: Bool?; var call: Bool? }
+    private struct SendSealed: Encodable { var type = "sendSealed"; var to: String; var ak: String; var sealed: SealedSender.Box; var id: String; var eph: Bool?; var call: Bool? }
 
     private func onConnected() {
         connected = true
@@ -180,7 +203,7 @@ final class Messenger: ObservableObject {
         }
         relay.send(Simple(type: "getSenderCert"))
         relay.send(Simple(type: "getPreKeyCount"))
-        if let t = Shared.defaults.string(forKey: "apns_token") { relay.send(SetPush(token: t, env: Self.pushEnv)) }
+        sendPushTokens()
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             await retryUnsent()
@@ -229,8 +252,10 @@ final class Messenger: ObservableObject {
         case "registered", "logged_in":
             loggedIn = true
             pstnAvailable = f.pstn == true
+        case "iceServers":
+            if !pendingIce.isEmpty { pendingIce.removeFirst().c.resume(returning: f.iceServers ?? []) }
         case "pstn":
-            if let call = f.call { onCallSignal?(f.from ?? f.to ?? "", call, nowMs()) }
+            break  // calls with ordinary phones go through the Android app for now
         default: break
         }
     }
@@ -288,17 +313,18 @@ final class Messenger: ObservableObject {
     }
 
     /// Encrypt a file under a fresh key (CSv2), upload the ciphertext, then send the key end to end.
-    func sendFile(_ conv: String, data: Data, name: String, mime: String, caption: String = "") async throws {
+    /// `kind`: "sticker" (shown without a bubble) or "voice" (a voice note); nil for photos and files.
+    func sendFile(_ conv: String, data: Data, name: String, mime: String, caption: String = "", kind: String? = nil) async throws {
         guard Int64(data.count) <= Self.maxFileBytes else { throw ChunkedAead.Failure.tooLarge(Self.maxFileBytes) }
         let key = Primitives.randomBytes(32)
         let path = Paths.attachments.appendingPathComponent(UUID().uuidString)
         try ChunkedAead.encrypt(data, key: key).write(to: path, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         let msgId = newId(), timer = timerOf(conv), keyB64 = Primitives.b64(key)
         let row = try db.run("""
-            INSERT INTO messages(conv, outgoing, body, ts, status, msgId, fileName, fileMime, fileSize, filePath, fileKey, fileState, expiresInSec, expiresAt)
-            VALUES(?, 1, ?, ?, 'sending', ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
-            """, conv, caption, nowMs(), msgId, name, mime, Int64(data.count), path.path, keyB64, timer, expiryFor(timer))
-        touchConversation(conv, Self.preview(caption, mime), incoming: false)
+            INSERT INTO messages(conv, outgoing, body, ts, status, msgId, fileName, fileMime, fileSize, filePath, fileKey, fileState, fileKind, expiresInSec, expiresAt)
+            VALUES(?, 1, ?, ?, 'sending', ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?)
+            """, conv, caption, nowMs(), msgId, name, mime, Int64(data.count), path.path, keyB64, kind, timer, expiryFor(timer))
+        touchConversation(conv, kind == "sticker" ? "Sticker" : kind == "voice" ? "🎤 Voice note" : Self.preview(caption, mime), incoming: false)
         Task { await shareProfile(conv) }
         inFlight.insert(row)
         defer { inFlight.remove(row) }
@@ -311,7 +337,7 @@ final class Messenger: ObservableObject {
             return
         }
         let p = Payload(t: "file", id: msgId, body: caption.isEmpty ? nil : caption,
-                        file: FileRef(blob: blob, key: keyB64, name: name, mime: mime, size: Int64(data.count)),
+                        file: FileRef(blob: blob, key: keyB64, name: name, mime: mime, size: Int64(data.count), kind: kind),
                         group: groupRef(conv), expire: timer > 0 ? timer : nil)
         await deliverTracked(conv, p, row)
     }
@@ -394,8 +420,9 @@ final class Messenger: ObservableObject {
         let enc = try CrossProcessLock.run { try encrypt(for: peer, plaintext, bundle: bundle, fresh: fresh) }
         if enc.keysChanged { noteSafetyNumberChange(peer) }
         let eph = (payload.expire ?? 0) > 0 && payload.t != "timer"
-        if trySendSealed(peer, enc, relayId: relayId, eph: eph) { return true }
-        return relay.send(SendFrame(to: peer, envelope: enc.envelope, id: relayId, eph: eph ? true : nil))
+        let call = payload.t == "call" && payload.call?.kind == "offer"
+        if trySendSealed(peer, enc, relayId: relayId, eph: eph, call: call) { return true }
+        return relay.send(SendFrame(to: peer, envelope: enc.envelope, id: relayId, eph: eph ? true : nil, call: call ? true : nil))
     }
 
     private struct Encrypted { var envelope: Envelope; var keysChanged: Bool; var peerIk: Data? }
@@ -424,13 +451,13 @@ final class Messenger: ObservableObject {
                          keysChanged: keysChanged, peerIk: theirIk)
     }
 
-    private func trySendSealed(_ peer: String, _ enc: Encrypted, relayId: String?, eph: Bool) -> Bool {
+    private func trySendSealed(_ peer: String, _ enc: Encrypted, relayId: String?, eph: Bool, call: Bool) -> Bool {
         guard let ak = accessKeys.of(peer), let peerIk = enc.peerIk, let cert = currentCert(), sealedRelay.isConnected,
               let box = try? SealedSender.seal(sender: identity.identity, recipientIk: peerIk, cert: cert, envelopeJson: Wire.json(enc.envelope))
         else { return false }
         let id = relayId ?? "s:" + newId()
         pendingSealed[id] = (peer, relayId.flatMap { Int64($0) })
-        if !sealedRelay.send(SendSealed(to: peer, ak: ak, sealed: box, id: id, eph: eph ? true : nil)) {
+        if !sealedRelay.send(SendSealed(to: peer, ak: ak, sealed: box, id: id, eph: eph ? true : nil, call: call ? true : nil)) {
             pendingSealed[id] = nil
             return false
         }
@@ -468,6 +495,38 @@ final class Messenger: ObservableObject {
             pendingLookups.append(c)
             relay.send(Lookup(phones: Array(phones.prefix(1000))))
         }
+    }
+
+    // MARK: - Calls
+
+    /// STUN/TURN servers for a call, from the relay (empty if it didn't answer).
+    func iceServers() async -> [IceServer] {
+        guard relay.isConnected else { return [] }
+        return await withCheckedContinuation { c in
+            let ticket = UUID()
+            pendingIce.append((ticket, c))
+            relay.send(Simple(type: "getIceServers"))
+            Task {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if let i = self.pendingIce.firstIndex(where: { $0.ticket == ticket }) { self.pendingIce.remove(at: i).c.resume(returning: []) }
+            }
+        }
+    }
+
+    /// Call signalling to `peer`, end to end. False if it couldn't be sent.
+    func sendCallSignal(_ peer: String, _ sig: CallSignal) async -> Bool {
+        // Caller ID: our profile goes first, so their phone can show our name as it rings.
+        if sig.kind == "offer" { await shareProfile(peer) }
+        return (try? await sendPayload(peer, Payload(t: "call", call: sig), relayId: nil)) ?? false
+    }
+
+    /// A call entry ("📞 Outgoing call · 1:23", "📞 Missed call") in the chat with `peer`.
+    func logCall(_ peer: String, outgoing: Bool, text: String, missed: Bool) {
+        let request = !outgoing && isRequest(peer, peer)
+        try? db.run("INSERT INTO messages(conv, outgoing, body, ts, status, msgId) VALUES(?, ?, ?, ?, ?, ?)",
+                    peer, outgoing, text, nowMs(), outgoing ? "sent" : "read", Self.systemPrefix + newId())
+        touchConversation(peer, text, incoming: missed && activeChat != peer, request: request)
+        if missed && activeChat != peer && !request { onIncoming?(peer, peer, text) }
     }
 
     // MARK: - Retry / reset
@@ -650,7 +709,12 @@ final class Messenger: ObservableObject {
             if sig.kind == "offer" && isRequest(from, from) {
                 noteSystem(from, "📞 Missed call"); return
             }
-            onCallSignal?(from, sig, ts)
+            guard let onCallSignal else {
+                // The notification extension can't ring; say what happened.
+                if sig.kind == "offer" { logCall(from, outgoing: false, text: "📞 Missed call", missed: true) }
+                return
+            }
+            onCallSignal(from, sig, ts)
         case "timer":
             guard let conv = conversationFor(from, p.group) else { return }
             let s = max(0, p.expire ?? 0)
@@ -685,7 +749,7 @@ final class Messenger: ObservableObject {
             f?.kind.flatMap { ["sticker", "voice"].contains($0) ? $0 : nil }, pollJson,
             expire, viewing ? expiryFor(expire) : nil as Int64?) else { return }
         if fetch { Task { await downloadAttachment(row) } }
-        let text = p.t == "poll" ? "📊 \(p.body ?? "")" : f?.kind == "sticker" ? "Sticker" : Self.preview(p.body ?? "", f?.mime)
+        let text = p.t == "poll" ? "📊 \(p.body ?? "")" : f?.kind == "sticker" ? "Sticker" : f?.kind == "voice" ? "🎤 Voice note" : Self.preview(p.body ?? "", f?.mime)
         touchConversation(conv, text, incoming: !viewing, request: request)
         if p.id != nil && !request {
             let kind = viewing && readReceipts ? "read" : "delivered"
@@ -939,6 +1003,7 @@ final class Messenger: ObservableObject {
         }
         try? db.run("DELETE FROM messages WHERE conv = ?", conv)
         try? db.run("DELETE FROM conversations WHERE id = ?", conv)
+        cancelReminders(conv: conv)
         touch()
     }
 

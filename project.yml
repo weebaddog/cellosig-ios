@@ -8,13 +8,18 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
   CellosigCore:
     path: Core
+  # Google's WebRTC, prebuilt (binary xcframework) — same engine the Android app uses.
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    minVersion: 114.0.0
+    maxVersion: 200.0.0
 targets:
   Cellosig:
     type: application
@@ -23,6 +28,7 @@ targets:
       - path: App
     dependencies:
       - package: CellosigCore
+      - package: WebRTC
       - target: CellosigNotify
     entitlements:
       path: App/Cellosig.entitlements
@@ -44,7 +50,9 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIApplicationSupportsIndirectInputEvents: true
         NSPhotoLibraryAddUsageDescription: Save photos from your chats.
-        UIBackgroundModes: [remote-notification]
+        NSMicrophoneUsageDescription: For calls and voice notes. Audio is end-to-end encrypted.
+        NSFaceIDUsageDescription: Unlock cellosig when App lock is on.
+        UIBackgroundModes: [remote-notification, voip, audio]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cellosig.app

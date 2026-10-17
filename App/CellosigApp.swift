@@ -1,4 +1,5 @@
 import CellosigCore
+import LocalAuthentication
 import SwiftUI
 import UserNotifications
 
@@ -21,7 +22,14 @@ struct CellosigApp: App {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ app: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        if Account.load() != nil { app.registerForRemoteNotifications() }
+        if Account.load() != nil {
+            app.registerForRemoteNotifications()
+            // PushKit must be set up at every launch: iOS may have launched us for a call.
+            MainActor.assumeIsolated {
+                _ = AppModel.shared
+                CallManager.shared.registerForVoIP()
+            }
+        }
         return true
     }
 
@@ -72,20 +80,34 @@ final class AppModel: ObservableObject {
     @Published var startupError: String?
     /// Hides the app's contents in the app switcher.
     @Published var obscured = false
+    /// App lock (Settings): set when the app goes to the background.
+    @Published private(set) var locked = false
+    private var promptedThisVisit = false
+
+    var lockEnabled: Bool {
+        get { Shared.defaults.bool(forKey: "app_lock") }
+        set { Shared.defaults.set(newValue, forKey: "app_lock"); objectWillChange.send() }
+    }
 
     static let defaultRelay = "wss://theoretical-grades-rising-louis.trycloudflare.com"
 
     init() {
         try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("share"))
-        if let account = Account.load() { start(account) }
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("voice"))
+        if let account = Account.load() {
+            locked = lockEnabled
+            start(account)
+        }
     }
 
     func start(_ account: Account) {
         do {
             let m = try Messenger(account: account)
             m.onIncoming = { [weak self] conv, sender, preview in self?.notify(conv: conv, sender: sender, preview: preview) }
+            m.onCallSignal = { from, sig, ts in CallManager.shared.onSignal(from, sig, ts) }
             m.start()
             messenger = m
+            CallManager.shared.registerForVoIP()
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
                 if granted { Task { @MainActor in UIApplication.shared.registerForRemoteNotifications() } }
             }
@@ -107,6 +129,37 @@ final class AppModel: ObservableObject {
     func phaseChanged(_ p: ScenePhase) {
         obscured = p != .active
         if p == .active { messenger?.foregrounded() }
+        if p == .background {
+            promptedThisVisit = false
+            if lockEnabled && messenger != nil { locked = true }
+        }
+    }
+
+    /// Face ID / Touch ID, falling back to the phone's passcode.
+    /// `auto`: the lock screen asking by itself — only once per visit, so
+    /// cancelling the prompt doesn't bring it straight back.
+    func unlock(auto: Bool = false) async {
+        guard locked else { return }
+        if auto { guard !promptedThisVisit else { return }; promptedThisVisit = true }
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
+            // The passcode was removed from the phone: nothing left to check against.
+            locked = false; return
+        }
+        if (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock cellosig")) == true { locked = false }
+    }
+
+    /// Turning the lock on needs a passcode on the phone and one successful check.
+    func setLock(_ on: Bool) async -> Bool {
+        guard on else { lockEnabled = false; return true }
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err),
+              (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Lock cellosig with Face ID or your passcode")) == true
+        else { return false }
+        lockEnabled = true
+        return true
     }
 
     /// A local notification while the app runs in the background (push notifications come with the relay's APNs support).
@@ -125,11 +178,16 @@ final class AppModel: ObservableObject {
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
+    @ObservedObject private var calls = CallManager.shared
 
     var body: some View {
         ZStack {
             if let m = model.messenger {
                 ChatListView().environmentObject(m)
+                if let call = calls.state {
+                    CallView(call: call).environmentObject(m).transition(.move(edge: .bottom))
+                }
+                if model.locked { LockView() }
             } else {
                 SetupView()
             }

@@ -51,6 +51,26 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(PhoneNumbers.mask("+15552340049"), "+1••••••••49")
     }
 
+    func testTimeParser() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        // Wednesday 14 October 2026, 10:00.
+        let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 14, hour: 10, minute: 0, second: 30))!
+        func at(_ d: Int, _ h: Int, _ m: Int = 0) -> Date { cal.date(from: DateComponents(year: 2026, month: 10, day: d, hour: h, minute: m))! }
+        func find(_ s: String) -> TimeParser.Suggestion? { TimeParser.find(s, now: now, calendar: cal) }
+
+        XCTAssertEqual(find("see you tomorrow at 5"), .init(at: at(15, 17), label: "Tomorrow 5:00 PM"))
+        XCTAssertEqual(find("call me in 2 hours")?.at, at(14, 12))
+        XCTAssertEqual(find("back in half an hour")?.at, at(14, 10, 30))
+        XCTAssertEqual(find("dinner friday 7pm"), .init(at: at(16, 19), label: "Friday 7:00 PM"))
+        XCTAssertEqual(find("meet at 9am wednesday"), .init(at: at(21, 9), label: "Oct 21 9:00 AM"), "today's 9am has passed: next week")
+        XCTAssertEqual(find("lunch at noon"), .init(at: at(14, 12), label: "Today 12:00 PM"))
+        XCTAssertEqual(find("ok 8:15 am")?.at, at(15, 8, 15), "a bare time that's passed means tomorrow")
+        XCTAssertEqual(find("party tonight")?.at, at(14, 20))
+        XCTAssertNil(find("no time in here"))
+        XCTAssertNil(find("in 0 minutes"), "not in the future")
+    }
+
     func testProfileNames() {
         XCTAssertEqual(Profiles.cleanName("  Al\u{202E}ex \n  Smith "), "Alex Smith")
         XCTAssertNil(Profiles.cleanName("\u{200B}\u{200B}"))

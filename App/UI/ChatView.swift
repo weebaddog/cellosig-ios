@@ -12,8 +12,12 @@ struct ChatView: View {
     @State private var showFiles = false
     @State private var showPoll = false
     @State private var showSafety = false
+    @State private var showStickers = false
+    @State private var remind: Message?
     @State private var error: String?
     @State private var share: URL?
+    @StateObject private var recorder = VoiceRecorder()
+    @ObservedObject private var calls = CallManager.shared
     @FocusState private var focused: Bool
 
     private var isGroup: Bool { Messenger.isGroup(conv) }
@@ -26,8 +30,9 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 6) {
+                        let reminders = Dictionary(grouping: m.reminders(conv: conv), by: { $0.msgRow ?? -1 })
                         ForEach(msgs) { msg in
-                            MessageRow(msg: msg, conv: conv, share: $share).id(msg.id)
+                            MessageRow(msg: msg, conv: conv, share: $share, remind: $remind, reminders: reminders[msg.id] ?? []).id(msg.id)
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 8)
@@ -53,6 +58,13 @@ struct ChatView: View {
                 }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if !isGroup && c?.request != true {
+                    Button {
+                        guard guardTrust() else { return }
+                        calls.call(conv)
+                    } label: { Image(systemName: "phone") }
+                    .disabled(calls.inCall || !m.connected)
+                }
                 if !isGroup {
                     Button { showSafety = true } label: {
                         Image(systemName: m.trustBroken(conv) ? "exclamationmark.shield.fill" : m.isVerified(conv) ? "checkmark.shield.fill" : "shield")
@@ -77,6 +89,10 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showSafety) { SafetyNumberView(peer: conv) }
         .sheet(isPresented: $showPoll) { PollComposer(conv: conv) }
+        .sheet(isPresented: $showStickers) {
+            StickerPicker { png in send(data: png, name: "sticker.png", mime: "image/png", kind: "sticker") }
+        }
+        .sheet(item: $remind) { msg in ReminderSheet(msg: msg).presentationDetents([.medium]) }
         .sheet(item: $share) { url in ShareSheet(items: [url]) }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
@@ -103,29 +119,53 @@ struct ChatView: View {
         .onChange(of: msgs.count) { _ in Task { await m.markRead(conv) } }
     }
 
-    private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            Menu {
-                PhotosPicker(selection: $photo, matching: .any(of: [.images, .videos])) { Label("Photo or video", systemImage: "photo") }
-                Button { showFiles = true } label: { Label("File", systemImage: "doc") }
-                Button { showPoll = true } label: { Label("Poll", systemImage: "chart.bar") }
-            } label: {
-                Image(systemName: "plus.circle.fill").font(.title2)
+    @ViewBuilder private var inputBar: some View {
+        if recorder.recording {
+            HStack(spacing: 12) {
+                Button(role: .destructive) { recorder.cancel() } label: { Image(systemName: "trash").font(.title2) }
+                Image(systemName: "circle.fill").foregroundStyle(.red).font(.caption)
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text("Recording " + CallManager.formatDuration(Int(Date().timeIntervalSince(recorder.started ?? Date()))))
+                        .monospacedDigit()
+                }
+                Spacer()
+                Button {
+                    if let data = recorder.finish() { send(data: data, name: "Voice note.m4a", mime: "audio/mp4", kind: "voice") }
+                } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }
             }
-            TextField("Message", text: $draft, axis: .vertical)
-                .lineLimit(1...5)
-                .autocorrectionDisabled()          // nothing typed here feeds the keyboard's learning
-                .textInputAutocapitalization(.sentences)
-                .keyboardType(.default)
-                .focused($focused)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 18).fill(Color(.secondarySystemBackground)))
-                .onSubmit(sendText)
-            Button(action: sendText) { Image(systemName: "arrow.up.circle.fill").font(.title) }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(.bar)
+        } else {
+            HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    PhotosPicker(selection: $photo, matching: .any(of: [.images, .videos])) { Label("Photo or video", systemImage: "photo") }
+                    Button { showFiles = true } label: { Label("File", systemImage: "doc") }
+                    Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
+                    Button { showPoll = true } label: { Label("Poll", systemImage: "chart.bar") }
+                } label: {
+                    Image(systemName: "plus.circle.fill").font(.title2)
+                }
+                TextField("Message", text: $draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .autocorrectionDisabled()          // nothing typed here feeds the keyboard's learning
+                    .textInputAutocapitalization(.sentences)
+                    .keyboardType(.default)
+                    .focused($focused)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 18).fill(Color(.secondarySystemBackground)))
+                    .onSubmit(sendText)
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        guard guardTrust() else { return }
+                        Task { if !(await recorder.start()) { error = "Can't record. Allow the microphone in Settings → cellosig (and not during a call)." } }
+                    } label: { Image(systemName: "mic.circle.fill").font(.title) }
+                } else {
+                    Button(action: sendText) { Image(systemName: "arrow.up.circle.fill").font(.title) }
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(.bar)
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(.bar)
     }
 
     private func guardTrust() -> Bool {
@@ -140,11 +180,53 @@ struct ChatView: View {
         Task { await m.sendText(conv, text) }
     }
 
-    private func send(data: Data, name: String, mime: String) {
+    private func send(data: Data, name: String, mime: String, kind: String? = nil) {
         guard guardTrust() else { return }
         Task {
-            do { try await m.sendFile(conv, data: data, name: name, mime: mime) }
+            do { try await m.sendFile(conv, data: data, name: name, mime: mime, kind: kind) }
             catch { self.error = "That file is too large (90 MB max)." }
+        }
+    }
+}
+
+/// "Remind me about this message": the time found in it (if any), or one you pick.
+struct ReminderSheet: View {
+    @EnvironmentObject var m: Messenger
+    @Environment(\.dismiss) private var dismiss
+    let msg: Message
+    @State private var at = Date().addingTimeInterval(3600)
+    @State private var failed = false
+
+    var body: some View {
+        let suggestion = TimeParser.find(msg.body)
+        NavigationStack {
+            Form {
+                if !msg.body.isEmpty {
+                    Section { Text(msg.body).lineLimit(3).foregroundStyle(.secondary) }
+                }
+                if let s = suggestion {
+                    Section("Found in the message") {
+                        Button { add(s.at) } label: { Label(s.label, systemImage: "alarm") }
+                    }
+                }
+                Section("Pick a time") {
+                    DatePicker("Remind me", selection: $at, in: Date().addingTimeInterval(60)...)
+                    Button("Set reminder") { add(at) }
+                }
+                if failed {
+                    Text("cellosig isn't allowed to show notifications. Turn them on in Settings → cellosig → Notifications.").foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Remind me")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear { if let s = suggestion { at = s.at } }
+        }
+    }
+
+    private func add(_ date: Date) {
+        Task {
+            if await m.addReminder(for: msg, at: date) { dismiss() } else { failed = true }
         }
     }
 }
@@ -156,6 +238,10 @@ struct MessageRow: View {
     let msg: Message
     let conv: String
     @Binding var share: URL?
+    @Binding var remind: Message?
+    let reminders: [Reminder]
+
+    private var isSticker: Bool { msg.fileKind == "sticker" && msg.fileState == "ready" }
 
     var body: some View {
         if msg.isSystem {
@@ -170,6 +256,13 @@ struct MessageRow: View {
                     }
                     bubble
                         .contextMenu { menu }
+                    ForEach(reminders) { r in
+                        Button { m.cancelReminder(r.id) } label: {
+                            Label(TimeParser.label(r.at), systemImage: "alarm").font(.caption2)
+                        }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                        .accessibilityHint("Cancels this reminder")
+                    }
                     let reactions = m.reactions(msg.msgId)
                     if !reactions.isEmpty {
                         Text(reactions.map(\.emoji).joined()).font(.caption)
@@ -184,6 +277,15 @@ struct MessageRow: View {
     }
 
     @ViewBuilder private var bubble: some View {
+        if isSticker {
+            // Stickers have no bubble.
+            attachment
+        } else {
+            bubbleBox
+        }
+    }
+
+    private var bubbleBox: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let poll = msg.poll {
                 PollView(msg: msg, poll: poll, conv: conv)
@@ -202,10 +304,22 @@ struct MessageRow: View {
     @ViewBuilder private var attachment: some View {
         switch msg.fileState {
         case "ready":
-            if msg.isImage, let d = m.attachmentData(msg), let img = UIImage(data: d) {
-                Image(uiImage: img).resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .onTapGesture { share = m.exportAttachment(msg) }
+            if msg.fileKind == "voice" || msg.fileMime?.hasPrefix("audio/") == true {
+                VoiceNoteView(msg: msg)
+            } else if msg.isImage {
+                let side: CGFloat = isSticker ? 140 : 240
+                let img = ImageDecode.forMessage(msg.id) { m.attachmentData(msg) }
+                if let img, img.images != nil {
+                    AnimatedImage(image: img).frame(width: side, height: isSticker ? side : 240 * img.size.height / max(img.size.width, 1))
+                        .clipShape(RoundedRectangle(cornerRadius: isSticker ? 0 : 10))
+                        .onTapGesture { share = m.exportAttachment(msg) }
+                } else if let img {
+                    Image(uiImage: img).resizable().scaledToFit().frame(maxWidth: side, maxHeight: isSticker ? side : 320)
+                        .clipShape(RoundedRectangle(cornerRadius: isSticker ? 0 : 10))
+                        .onTapGesture { share = m.exportAttachment(msg) }
+                } else {
+                    Label("Picture can't be shown", systemImage: "photo").font(.caption)
+                }
             } else {
                 Button { share = m.exportAttachment(msg) } label: {
                     Label("\(msg.fileName ?? "File") · \(ByteCountFormatter.string(fromByteCount: msg.fileSize ?? 0, countStyle: .file))", systemImage: "doc")
@@ -249,6 +363,9 @@ struct MessageRow: View {
         }
         if !msg.body.isEmpty {
             Button { SecurePasteboard.copy(msg.body) } label: { Label("Copy", systemImage: "doc.on.doc") }
+        }
+        Button { remind = msg } label: {
+            Label(TimeParser.find(msg.body).map { "Remind me \($0.label)" } ?? "Remind me…", systemImage: "alarm")
         }
     }
 }
