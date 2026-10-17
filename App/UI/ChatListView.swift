@@ -35,8 +35,21 @@ struct ChatListView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showNew = true } label: { Image(systemName: "square.and.pencil") }
+                if !Glass26.on {   // iOS 26: the floating glass button below instead
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showNew = true } label: { Image(systemName: "square.and.pencil") }
+                    }
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if Glass26.on && query.isEmpty {
+                    Button { showNew = true } label: {
+                        Image(systemName: "square.and.pencil").font(.title2.weight(.semibold)).foregroundStyle(.white)
+                            .frame(width: 60, height: 60)
+                            .liquidGlass(in: Circle(), tint: .accentColor)
+                    }
+                    .accessibilityLabel("New chat")
+                    .padding(.trailing, 20).padding(.bottom, 12)
                 }
             }
             .sheet(isPresented: $showNew) {
@@ -56,14 +69,17 @@ struct ChatListView: View {
         List {
                 if !m.connected {
                     Label("Connecting to relay…", systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.orange)
+                        .glassBanner()
                 }
                 if KeepAlive.shared.enabled, let paused = KeepAlive.shared.pausedAt, Date().timeIntervalSince(paused) < 6 * 3600 {
                     Label("iOS paused cellosig in the background at \(paused.formatted(date: .omitted, time: .shortened)), so calls and messages waited until you opened it. Don't swipe cellosig away in the app switcher, and turn off Low Power Mode.", systemImage: "moon.zzz")
                         .font(.footnote).foregroundStyle(.orange)
+                        .glassBanner()
                 }
                 if m.authFailed {
                     Label("The relay no longer accepts this sign-in. Sign up again in Settings.", systemImage: "exclamationmark.triangle")
                         .font(.footnote).foregroundStyle(.red)
+                        .glassBanner()
                 }
                 if !requests.isEmpty {
                     NavigationLink { RequestsView(path: $path) } label: {
@@ -85,6 +101,7 @@ struct ChatListView: View {
                 }
         }
         .listStyle(.plain)
+        .contentMargins(.bottom, Glass26.on ? 84 : 0, for: .scrollContent)   // room for the floating button
     }
 
     /// A notification, widget or share was tapped: show that chat.

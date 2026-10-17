@@ -17,6 +17,31 @@ extension View {
         liquidGlass(in: shape, tint: tint, fallback: .bar)
     }
 
+    /// A notice in a list (connection trouble etc.) as a glass card on iOS 26.
+    @ViewBuilder
+    func glassBanner() -> some View {
+        if Glass26.on {
+            padding(.horizontal, 14).padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        } else {
+            self
+        }
+    }
+
+    /// Buttons: glass (or tinted "prominent" glass for the main action) on iOS 26+;
+    /// bordered / bordered-prominent before.
+    @ViewBuilder
+    func glassButton(prominent: Bool = false) -> some View {
+        if #available(iOS 26.0, *) {
+            if prominent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
+        } else {
+            if prominent { buttonStyle(.borderedProminent) } else { buttonStyle(.bordered) }
+        }
+    }
+
     /// Liquid Glass in `shape` on iOS 26+; `fallback` filling the shape before.
     @ViewBuilder
     func liquidGlass<S: Shape, F: ShapeStyle>(in shape: S, tint: Color? = nil, fallback: F) -> some View {

@@ -40,7 +40,24 @@ struct CallView: View {
             Spacer().frame(height: 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground).ignoresSafeArea())
+        .background(background.ignoresSafeArea())
+        // On the deep gradient everything reads as on a dark screen.
+        .environment(\.colorScheme, Glass26.on ? .dark : colorScheme)
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// iOS 26: a deep gradient in the caller's avatar colour, so the glass buttons
+    /// have something to refract; before, the plain background.
+    @ViewBuilder private var background: some View {
+        if Glass26.on {
+            let hue = Double(call.peer.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xffff } % 360) / 360
+            LinearGradient(colors: [Color(hue: hue, saturation: 0.55, brightness: 0.55),
+                                    Color(hue: (hue + 0.1).truncatingRemainder(dividingBy: 1), saturation: 0.65, brightness: 0.18)],
+                           startPoint: .top, endPoint: .bottom)
+        } else {
+            Color(.systemBackground)
+        }
     }
 
     /// Your name for them, else (a phone call) the network's caller name, else the number.
@@ -99,16 +116,16 @@ struct LockView: View {
                     .textContentType(.password)
                     .focused($focused)
                     .onSubmit(tryPassword)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemBackground)))
+                    .padding(14)
+                    .liquidGlass(in: RoundedRectangle(cornerRadius: 16), fallback: Color(.secondarySystemBackground))
                     .frame(maxWidth: 280)
-                Button("Unlock", action: tryPassword).buttonStyle(.borderedProminent).disabled(password.isEmpty)
+                Button("Unlock", action: tryPassword).glassButton(prominent: true).controlSize(.large).disabled(password.isEmpty)
                 if model.biometricsAllowed {
-                    Button("Use Face ID") { Task { await model.unlock() } }
+                    Button("Use Face ID") { Task { await model.unlock() } }.glassButton()
                 }
                 if let message { Text(message).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center).padding(.horizontal) }
             } else {
-                Button("Unlock") { Task { await model.unlock() } }.buttonStyle(.borderedProminent)
+                Button("Unlock") { Task { await model.unlock() } }.glassButton(prominent: true).controlSize(.large)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

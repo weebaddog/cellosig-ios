@@ -324,12 +324,17 @@ struct SetupView: View {
                             .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).font(.footnote.monospaced())
                     }
                     Section {
-                        Button(busy ? "Sending code…" : "Send code", action: requestCode).disabled(busy || number.isEmpty)
+                        Button(action: requestCode) { Text(busy ? "Sending code…" : "Send code").frame(maxWidth: .infinity) }
+                            .glassButton(prominent: true).controlSize(.large)
+                            .disabled(busy || number.isEmpty)
+                            .listRowBackground(Glass26.on ? Color.clear : nil)
                     }
                 } else {
                     Section("Code sent to \(PhoneNumbers.pretty(phone!))") {
                         TextField("6-digit code", text: $code).keyboardType(.numberPad).textContentType(.oneTimeCode)
-                        Button(busy ? "Checking…" : "Verify", action: submitCode).disabled(busy || code.count < 4)
+                        Button(action: submitCode) { Text(busy ? "Checking…" : "Verify").frame(maxWidth: .infinity) }
+                            .glassButton(prominent: true).controlSize(.large)
+                            .disabled(busy || code.count < 4)
                         Button("Use a different number") { phone = nil; code = "" }.foregroundStyle(.secondary)
                     }
                 }

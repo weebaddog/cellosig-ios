@@ -349,7 +349,10 @@ struct StickerPicker: View {
                                 Text("From a photo").font(.caption2)
                             }
                             .frame(width: 72, height: 72)
-                            .background(RoundedRectangle(cornerRadius: 12).strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5])))
+                            .background {
+                                if !Glass26.on { RoundedRectangle(cornerRadius: 12).strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5])) }
+                            }
+                            .liquidGlass(in: RoundedRectangle(cornerRadius: 16), fallback: Color.clear)
                         }
                         ForEach(mine, id: \.self) { url in
                             Button {

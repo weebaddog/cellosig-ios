@@ -54,7 +54,7 @@ struct ChatView: View {
                     LazyVStack(spacing: 6) {
                         if total > msgs.count {
                             Button("Show earlier messages") { limit += 300 }
-                                .font(.footnote).buttonStyle(.bordered).padding(.bottom, 4)
+                                .font(.footnote).glassButton().padding(.bottom, 4)
                         }
                         let reminders = Dictionary(grouping: m.reminders(conv: conv), by: { $0.msgRow ?? -1 })
                         ForEach(msgs) { msg in
@@ -410,7 +410,7 @@ struct MessageRow: View {
         if msg.isSystem {
             Text(msg.body).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .liquidGlass(in: RoundedRectangle(cornerRadius: 12), fallback: .thinMaterial)
                 .padding(4).frame(maxWidth: .infinity)
         } else {
             HStack {
@@ -426,14 +426,14 @@ struct MessageRow: View {
                         Button { m.cancelReminder(r.id) } label: {
                             Label(TimeParser.label(r.at), systemImage: "alarm").font(.caption2)
                         }
-                        .buttonStyle(.bordered).controlSize(.mini)
+                        .glassButton().controlSize(.mini)
                         .accessibilityHint("Cancels this reminder")
                     }
                     let reactions = m.reactions(msg.msgId)
                     if !reactions.isEmpty {
                         Text(reactions.map(\.emoji).joined()).font(.caption)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Capsule().fill(Color(.secondarySystemBackground)))
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .liquidGlass(in: Capsule(), fallback: Color(.secondarySystemBackground))
                     }
                     footer
                 }
@@ -469,7 +469,7 @@ struct MessageRow: View {
             }
             if let code = otp {
                 Button { SecurePasteboard.copy(code) } label: { Label("Copy code \(code)", systemImage: "doc.on.doc") }
-                    .buttonStyle(.bordered).controlSize(.small)
+                    .glassButton().controlSize(.small)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -569,13 +569,15 @@ struct RequestBar: View {
             Text("\(m.title(conv)) isn't in your chats. Accept to reply and let them know you've seen their messages.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             HStack {
-                if !Messenger.isGroup(conv) { Button("Block", role: .destructive) { m.block(conv); close() } }
-                Button("Delete", role: .destructive) { m.deleteConversation(conv); close() }
+                if !Messenger.isGroup(conv) { Button("Block", role: .destructive) { m.block(conv); close() }.glassButton() }
+                Button("Delete", role: .destructive) { m.deleteConversation(conv); close() }.glassButton()
                 Spacer()
-                Button("Accept") { Task { await m.acceptRequest(conv) } }.buttonStyle(.borderedProminent)
+                Button("Accept") { Task { await m.acceptRequest(conv) } }.glassButton(prominent: true)
             }
         }
-        .padding().background(.bar)
+        .padding()
+        .liquidGlass(in: RoundedRectangle(cornerRadius: Glass26.on ? 24 : 0), fallback: .bar)
+        .padding(Glass26.on ? 10 : 0)
     }
 }
 
