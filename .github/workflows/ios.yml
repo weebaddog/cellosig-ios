@@ -78,6 +78,8 @@ jobs:
             /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" "$1" || true
             /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$1"
             /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" "$1"
+            # CallKit refuses incoming calls without it (no PushKit pushes come anyway).
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:1 string voip" "$1"
             /usr/libexec/PlistBuddy -c "Add :CellosigKeepAlive bool true" "$1"
           }
 

@@ -5,6 +5,7 @@ import Foundation
 import os
 import PushKit
 import UIKit
+import UserNotifications
 import WebRTC
 
 /// One-to-one encrypted voice calls (the iOS port of the Android CallManager).
@@ -38,6 +39,9 @@ final class CallManager: NSObject, ObservableObject {
         var muted = false
         var speaker = false
         var endReason: String?
+        /// iOS refused to show this call through CallKit (it happens to sideloaded
+        /// copies): it runs on our own call screen instead, with our own ringing.
+        var kitless = false
     }
 
     @Published private(set) var state: State?
@@ -117,19 +121,31 @@ final class CallManager: NSObject, ObservableObject {
         controller.request(CXTransaction(action: action)) { error in
             guard let error else { return }
             Task { @MainActor in
-                self.log.warning("CallKit refused the call: \(error.localizedDescription, privacy: .public)")
-                if self.state?.id == s.id { self.state = nil }
+                // Not allowed to use the system call screen: place it on ours.
+                self.log.warning("CallKit refused the call (\((error as NSError).code)); calling without it")
+                guard self.state?.id == s.id else { return }
+                self.state?.kitless = true
+                self.activateAudioManually()
+                self.startOutgoing(s)
             }
         }
     }
 
     func answer() {
         guard let s = state, s.phase == .incoming else { return }
+        if s.kitless {
+            stopRinging()
+            guard let offer = remoteOffer else { return }
+            activateAudioManually()
+            acceptIncoming(s, offer)
+            return
+        }
         controller.request(CXTransaction(action: CXAnswerCallAction(call: s.uuid))) { _ in }
     }
 
     func hangup() {
         guard let s = state, s.phase != .ended else { return }
+        if s.kitless { userEnded(s.id); return }
         controller.request(CXTransaction(action: CXEndCallAction(call: s.uuid))) { error in
             // CallKit no longer knows the call: end it ourselves.
             if error != nil { Task { @MainActor in self.userEnded(s.id) } }
@@ -138,6 +154,11 @@ final class CallManager: NSObject, ObservableObject {
 
     func toggleMute() {
         guard let s = state else { return }
+        if s.kitless {
+            track?.isEnabled = s.muted   // was muted: unmute
+            state?.muted.toggle()
+            return
+        }
         controller.request(CXTransaction(action: CXSetMutedCallAction(call: s.uuid, muted: !s.muted))) { _ in }
     }
 
@@ -186,9 +207,22 @@ final class CallManager: NSObject, ObservableObject {
                 if let a = pendingAnswer { pendingAnswer = nil; accept(a) }
             } else {
                 provider.reportNewIncomingCall(with: uuid, update: update(from)) { error in
-                    // Do Not Disturb, Focus, or a blocked number in iOS settings.
-                    guard error != nil else { return }
-                    Task { @MainActor in self.end(sig.id, "missed", notify: true, signal: "busy", tellCallKit: false) }
+                    guard let error else { return }
+                    Task { @MainActor in
+                        guard self.isCurrent(sig.id) else { return }
+                        let code = (error as NSError).code
+                        if code == CXErrorCodeIncomingCallError.filteredByDoNotDisturb.rawValue
+                            || code == CXErrorCodeIncomingCallError.filteredByBlockList.rawValue {
+                            // Focus / Do Not Disturb, or blocked in iOS settings: they meant it.
+                            self.end(sig.id, "missed", notify: true, signal: "busy", tellCallKit: false)
+                        } else {
+                            // iOS won't let this copy use the system call screen (sideloaded):
+                            // ring on our own screen instead of turning the call away.
+                            self.log.warning("CallKit refused the incoming call (\(code)); ringing without it")
+                            self.state?.kitless = true
+                            self.startRinging(from)
+                        }
+                    }
                 }
             }
             armTimeout(sig.id) { $0.end(sig.id, "missed", notify: false) }
@@ -222,6 +256,11 @@ final class CallManager: NSObject, ObservableObject {
         configureAudioSession()
         action.fulfill()
         provider.reportCall(with: s.uuid, updated: update(s.peer))
+        startOutgoing(s)
+    }
+
+    /// Make the offer and send it (with or without CallKit).
+    private func startOutgoing(_ s: State) {
         Task {
             guard await AVAudioApplication.requestRecordPermission() else {
                 self.end(s.id, "no_microphone", notify: false); return
@@ -251,6 +290,11 @@ final class CallManager: NSObject, ObservableObject {
         guard let s = state, s.uuid == action.callUUID, s.phase == .incoming, let offer = remoteOffer else { action.fail(); return }
         configureAudioSession()
         action.fulfill()
+        acceptIncoming(s, offer)
+    }
+
+    /// Answer the offer (with or without CallKit).
+    private func acceptIncoming(_ s: State, _ offer: String) {
         timeout?.cancel()
         state?.phase = .connecting
         Task {
@@ -305,6 +349,60 @@ final class CallManager: NSObject, ObservableObject {
         rtc.lockForConfiguration()
         try? rtc.setConfiguration(RTCAudioSessionConfiguration.webRTC())
         rtc.unlockForConfiguration()
+    }
+
+    // MARK: - Calls without CallKit
+
+    /// CallKit normally switches the audio on for a call; without it we do it ourselves.
+    private func activateAudioManually() {
+        configureAudioSession()
+        let rtc = RTCAudioSession.sharedInstance()
+        rtc.lockForConfiguration()
+        try? rtc.setActive(true)
+        rtc.unlockForConfiguration()
+        rtc.audioSessionDidActivate(AVAudioSession.sharedInstance())
+        rtc.isAudioEnabled = true
+    }
+
+    private func deactivateAudioManually() {
+        let rtc = RTCAudioSession.sharedInstance()
+        rtc.isAudioEnabled = false
+        rtc.lockForConfiguration()
+        try? rtc.setActive(false)
+        rtc.unlockForConfiguration()
+        rtc.audioSessionDidDeactivate(AVAudioSession.sharedInstance())
+        KeepAlive.shared.start()
+    }
+
+    private var ringer: Task<Void, Never>?
+    private static let ringNotificationId = "incoming-call"
+
+    /// Ring on our own: our call screen is up (RootView shows it), the phone
+    /// buzzes and plays the alert sound until answered or ended, and in the
+    /// background a notification says a call is coming in.
+    private func startRinging(_ from: String) {
+        stopRinging()
+        if UIApplication.shared.applicationState != .active {
+            let c = UNMutableNotificationContent()
+            c.title = "Incoming call"
+            c.body = Shared.defaults.bool(forKey: "notify_preview") ? "\(shownName(from)) is calling — tap to answer" : "Tap to answer"
+            c.sound = .defaultCritical
+            c.interruptionLevel = .timeSensitive
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.ringNotificationId, content: c, trigger: nil))
+        }
+        ringer = Task {
+            while !Task.isCancelled {
+                AudioServicesPlayAlertSound(SystemSoundID(1005))
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+            }
+        }
+    }
+
+    private func stopRinging() {
+        ringer?.cancel()
+        ringer = nil
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.ringNotificationId])
     }
 
     // MARK: - VoIP push
@@ -409,7 +507,12 @@ final class CallManager: NSObject, ObservableObject {
         log.info("call ended: \(reason, privacy: .public)")
         timeout?.cancel()
         if notify, let signal { send(s.peer, CallSignal(id: id, kind: "hangup", reason: signal)) }
-        if tellCallKit { provider.reportCall(with: s.uuid, endedAt: Date(), reason: Self.kitReason(reason, outgoing: s.outgoing)) }
+        if s.kitless {
+            stopRinging()
+            if s.phase != .incoming { deactivateAudioManually() }
+        } else if tellCallKit {
+            provider.reportCall(with: s.uuid, endedAt: Date(), reason: Self.kitReason(reason, outgoing: s.outgoing))
+        }
         pc?.close()
         pc = nil
         track = nil
