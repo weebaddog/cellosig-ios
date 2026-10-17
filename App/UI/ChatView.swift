@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var unsending: Message?
     @State private var confirmDelete = false
     @State private var editingPhoto: EditablePhoto?
+    @State private var showPhotos = false
     @State private var draft = ""
     @State private var photo: PhotosPickerItem?
     @State private var showFiles = false
@@ -164,6 +165,7 @@ struct ChatView: View {
             StickerPicker { png in send(data: png, name: "sticker.png", mime: "image/png", kind: "sticker") }
         }
         .sheet(item: $remind) { msg in ReminderSheet(msg: msg).presentationDetents([.medium]) }
+        .photosPicker(isPresented: $showPhotos, selection: $photo, matching: .any(of: [.images, .videos]))
         .fullScreenCover(item: $editingPhoto) { p in
             PhotoEditor(image: p.image) { data, mime, name, caption, sticker in
                 send(data: data, name: name, mime: mime, kind: sticker ? "sticker" : nil, caption: caption)
@@ -265,7 +267,9 @@ struct ChatView: View {
         } else {
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
-                    PhotosPicker(selection: $photo, matching: .any(of: [.images, .videos])) { Label("Photo or video", systemImage: "photo") }
+                    // (A PhotosPicker inside a Menu doesn't open on newer iOS: the menu closes
+                    // first. A plain button opens it through .photosPicker instead.)
+                    Button { showPhotos = true } label: { Label("Photo or video", systemImage: "photo") }
                     Button { showFiles = true } label: { Label("File", systemImage: "doc") }
                     Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
                     Button { showPoll = true } label: { Label("Poll", systemImage: "chart.bar") }
