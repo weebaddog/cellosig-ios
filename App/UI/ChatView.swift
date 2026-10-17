@@ -18,6 +18,7 @@ struct ChatView: View {
     @State private var editText = ""
     @State private var unsending: Message?
     @State private var confirmDelete = false
+    @State private var editingPhoto: EditablePhoto?
     @State private var draft = ""
     @State private var photo: PhotosPickerItem?
     @State private var showFiles = false
@@ -163,6 +164,11 @@ struct ChatView: View {
             StickerPicker { png in send(data: png, name: "sticker.png", mime: "image/png", kind: "sticker") }
         }
         .sheet(item: $remind) { msg in ReminderSheet(msg: msg).presentationDetents([.medium]) }
+        .fullScreenCover(item: $editingPhoto) { p in
+            PhotoEditor(image: p.image) { data, mime, name, caption, sticker in
+                send(data: data, name: name, mime: mime, kind: sticker ? "sticker" : nil, caption: caption)
+            }
+        }
         .sheet(item: $share) { url in ShareSheet(items: [url]) }
         // The decrypted copy made for sharing goes as soon as the share sheet closes
         // (the app now keeps running for days, so "on next launch" was too late).
@@ -192,6 +198,13 @@ struct ChatView: View {
                 guard size <= Messenger.maxFileBytes else { error = "That video is too large (90 MB max)."; return }
                 guard let data = try? Data(contentsOf: picked.url) else { error = "Couldn't load that photo."; return }
                 let type = item.supportedContentTypes.first
+                // Photos open in the editor (which also strips their hidden location data);
+                // videos and animated GIFs go as they are.
+                if let type, type.conforms(to: .image), !type.conforms(to: .gif),
+                   let img = ImageDecode.still(data, maxPixels: 3000) {
+                    editingPhoto = EditablePhoto(image: img)
+                    return
+                }
                 let mime = type?.preferredMIMEType ?? "image/jpeg"
                 let ext = type?.preferredFilenameExtension ?? "jpg"
                 send(data: data, name: "photo.\(ext)", mime: mime)
@@ -312,10 +325,10 @@ struct ChatView: View {
         Task { await m.sendText(conv, text) }
     }
 
-    private func send(data: Data, name: String, mime: String, kind: String? = nil) {
+    private func send(data: Data, name: String, mime: String, kind: String? = nil, caption: String = "") {
         guard guardTrust() else { return }
         Task {
-            do { try await m.sendFile(conv, data: data, name: name, mime: mime, kind: kind) }
+            do { try await m.sendFile(conv, data: data, name: name, mime: mime, caption: caption, kind: kind) }
             catch ChunkedAead.Failure.tooLarge { self.error = "That file is too large (90 MB max)." }
             catch { self.error = "Couldn't prepare that file to send (is the iPhone's storage full?)." }
         }
@@ -365,6 +378,12 @@ struct ReminderSheet: View {
 }
 
 extension URL: Identifiable { public var id: String { absoluteString } }
+
+/// A picked photo on its way into the editor.
+struct EditablePhoto: Identifiable {
+    let id = UUID()
+    let image: UIImage
+}
 
 /// A photo or video from the picker, copied to a protected temporary file
 /// (deleted after sending, and on next launch).
