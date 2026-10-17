@@ -49,6 +49,42 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 200
 
+  sideload:
+    # Unsigned device build to install with Sideloadly and a free Apple ID.
+    # Free accounts can't use push, so no notification extension: messages and
+    # calls arrive only while the app is open. Own bundle id, so the real
+    # com.cellosig.app stays free for the paid team (TestFlight).
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build for iPhone (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project Cellosig.xcodeproj -scheme Cellosig -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CELLOSIG_BUNDLE_ID=com.cellosig.sideload \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" build | tail -n 50
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Cellosig.app Payload/
+          rm -rf Payload/Cellosig.app/PlugIns
+          /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" Payload/Cellosig.app/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" Payload/Cellosig.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" Payload/Cellosig.app/Info.plist
+          zip -qry cellosig-sideload.ipa Payload
+          ls -l cellosig-sideload.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cellosig-sideload
+          path: cellosig-sideload.ipa
+          retention-days: 30
+
   testflight:
     # Needs repository secrets (see README): ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8, APPLE_TEAM_ID.
     needs: [core, app]

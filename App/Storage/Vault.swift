@@ -38,37 +38,45 @@ final class Vault {
 
     /// Crypto-erase: without the key every sealed file is noise.
     func destroyKey() {
-        SecItemDelete(baseQuery() as CFDictionary)
+        SecItemDelete(baseQuery(shared: true) as CFDictionary)
+        SecItemDelete(baseQuery(shared: false) as CFDictionary)
     }
 
-    private func baseQuery() -> [String: Any] {
+    /// `shared`: in the keychain group the notification extension can read. Builds
+    /// without that entitlement (simulator, sideloaded) keep the key app-private.
+    private func baseQuery(shared: Bool) -> [String: Any] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        if let group = Paths.keychainGroup { q[kSecAttrAccessGroup as String] = group }
+        if shared, let group = Paths.keychainGroup { q[kSecAttrAccessGroup as String] = group }
         return q
     }
 
-    private func loadOrCreateKey() -> SymmetricKey {
-        var q = baseQuery()
+    private func readKey(shared: Bool) -> SymmetricKey? {
+        var q = baseQuery(shared: shared)
         q[kSecReturnData as String] = true
         var out: CFTypeRef?
-        if SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data, d.count == 32 {
-            return SymmetricKey(data: d)
-        }
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data, d.count == 32 else { return nil }
+        return SymmetricKey(data: d)
+    }
+
+    private func loadOrCreateKey() -> SymmetricKey {
+        // (Without the group entitlement, the shared lookup fails every time: the
+        // key must then be found app-private, or each launch would make a new
+        // one and nothing sealed before would open again.)
+        if let k = readKey(shared: true) ?? readKey(shared: false) { return k }
         let fresh = Primitives.randomBytes(32)
-        var add = baseQuery()
+        var add = baseQuery(shared: true)
         add[kSecValueData as String] = fresh
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         var status = SecItemAdd(add as CFDictionary, nil)
         if status == errSecMissingEntitlement || status == errSecNoSuchAttr, add[kSecAttrAccessGroup as String] != nil {
-            // Unsigned/simulator builds have no shared keychain group.
             add.removeValue(forKey: kSecAttrAccessGroup as String)
             status = SecItemAdd(add as CFDictionary, nil)
         }
-        precondition(status == errSecSuccess || status == errSecDuplicateItem, "keychain unavailable (\(status))")
+        precondition(status == errSecSuccess, "keychain unavailable (\(status))")
         return SymmetricKey(data: fresh)
     }
 }

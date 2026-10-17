@@ -12,6 +12,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Overridden for the sideload build (a free Apple ID must not claim the real bundle id).
+    CELLOSIG_BUNDLE_ID: com.cellosig.app
 packages:
   CellosigCore:
     path: Core
@@ -55,7 +57,7 @@ targets:
         UIBackgroundModes: [remote-notification, voip, audio]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cellosig.app
+        PRODUCT_BUNDLE_IDENTIFIER: $(CELLOSIG_BUNDLE_ID)
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
@@ -90,7 +92,7 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cellosig.app.notify
+        PRODUCT_BUNDLE_IDENTIFIER: $(CELLOSIG_BUNDLE_ID).notify
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
 schemes:
