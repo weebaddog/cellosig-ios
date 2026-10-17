@@ -4,7 +4,8 @@ import UserNotifications
 
 @main
 struct CellosigApp: App {
-    @StateObject private var model = AppModel()
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var model = AppModel.shared
     @Environment(\.scenePhase) private var phase
 
     var body: some Scene {
@@ -16,10 +17,58 @@ struct CellosigApp: App {
     }
 }
 
+/// Push registration, quiet "relay moved" pushes, and notification taps.
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(_ app: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        if Account.load() != nil { app.registerForRemoteNotifications() }
+        return true
+    }
+
+    func application(_ app: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+        let hex = token.map { String(format: "%02x", $0) }.joined()
+        Task { @MainActor in
+            Shared.defaults.set(hex, forKey: "apns_token")
+            AppModel.shared.messenger?.setPushToken(hex)
+        }
+    }
+
+    func application(_ app: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
+
+    /// Background push: the relay moved to a new address.
+    func application(_ app: UIApplication, didReceiveRemoteNotification info: [AnyHashable: Any],
+                     fetchCompletionHandler done: @escaping (UIBackgroundFetchResult) -> Void) {
+        Task { @MainActor in
+            if let url = RelayAddress.accept(info["r"]) { AppModel.shared.messenger?.moveRelay(to: url); done(.newData) }
+            else { done(.noData) }
+        }
+    }
+
+    /// Tapped a notification: open that chat.
+    func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        let conv = response.notification.request.content.userInfo["conv"] as? String
+        Task { @MainActor in
+            if let conv { AppModel.shared.openConversation = conv }
+            done()
+        }
+    }
+
+    /// In the foreground the chat list shows new messages itself.
+    func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([])
+    }
+}
+
 /// Holds the signed-in messenger (or nil while setting up).
 @MainActor
 final class AppModel: ObservableObject {
+    static let shared = AppModel()
+
     @Published private(set) var messenger: Messenger?
+    /// Set when a notification is tapped; the chat list opens it.
+    @Published var openConversation: String?
     @Published var startupError: String?
     /// Hides the app's contents in the app switcher.
     @Published var obscured = false
@@ -37,7 +86,9 @@ final class AppModel: ObservableObject {
             m.onIncoming = { [weak self] conv, sender, preview in self?.notify(conv: conv, sender: sender, preview: preview) }
             m.start()
             messenger = m
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                if granted { Task { @MainActor in UIApplication.shared.registerForRemoteNotifications() } }
+            }
         } catch {
             startupError = "Couldn't open your messages (\(error.localizedDescription))."
         }
@@ -61,7 +112,7 @@ final class AppModel: ObservableObject {
     /// A local notification while the app runs in the background (push notifications come with the relay's APNs support).
     private func notify(conv: String, sender: String, preview: String) {
         guard let m = messenger else { return }
-        let showContent = UserDefaults.standard.object(forKey: "notify_preview") as? Bool ?? false
+        let showContent = Shared.defaults.bool(forKey: "notify_preview")
         let c = UNMutableNotificationContent()
         c.title = showContent ? m.title(conv) : "cellosig"
         c.body = showContent ? (Messenger.isGroup(conv) ? "\(m.displayName(sender)): \(preview)" : preview) : "New message"

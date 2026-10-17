@@ -73,6 +73,30 @@ final class Vault {
     }
 }
 
+/// The app and its notification extension are separate processes sharing one
+/// set of keys and sessions. Every step that reads-modifies-writes them runs
+/// under this lock (flock on a file in the App Group) and reads state fresh
+/// from disk, so the two can never interleave a ratchet step.
+enum CrossProcessLock {
+    private static let fd: Int32 = open(Paths.root.appendingPathComponent(".lock").path, O_CREAT | O_RDWR, 0o600)
+    private static var depth = 0   // re-entrant within this process (always used on the main actor)
+
+    static func run<T>(_ body: () throws -> T) rethrows -> T {
+        if depth == 0 { flock(fd, LOCK_EX) }
+        depth += 1
+        defer {
+            depth -= 1
+            if depth == 0 { flock(fd, LOCK_UN) }
+        }
+        return try body()
+    }
+}
+
+/// Settings both processes read (read receipts, notification previews, push token).
+enum Shared {
+    static let defaults = UserDefaults(suiteName: Paths.appGroup) ?? .standard
+}
+
 /// Where everything lives: the App Group container, shared with the notification extension.
 enum Paths {
     static let appGroup = "group.com.cellosig.app"

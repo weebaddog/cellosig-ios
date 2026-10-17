@@ -46,7 +46,7 @@ struct SettingsView: View {
     @State private var name = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var confirmDelete = false
-    @AppStorage("notify_preview") private var notifyPreview = false
+    @AppStorage("notify_preview", store: Shared.defaults) private var notifyPreview = false
 
     var body: some View {
         let _ = m.revision

@@ -4,6 +4,7 @@ import Foundation
 /// The signed-in account: number, relay token, relay address. Vault-sealed.
 struct Account: Codable, Equatable {
     var phone: String
+    // (relayURL may be moved by a signed address from the relay; see RelayAddress)
     var token: String
     var relayURL: String
 
@@ -54,13 +55,25 @@ final class IdentityStore {
     var identity: KeyPair { kp(data.ikPriv, data.ikPub) }
     var signedPreKey: KeyPair { kp(data.spkPriv, data.spkPub) }
 
+    /// Re-read from disk (the other process may have used or added one-time prekeys).
+    func reload() {
+        if let raw = Vault.shared.readSealed(file), let stored = try? JSONDecoder().decode(Stored.self, from: raw) { data = stored }
+    }
+
     func publicBundle(otpkCount: Int) throws -> PublicBundle {
-        if data.oneTimePreKeys.isEmpty { _ = try generateOneTimePreKeys(otpkCount) }
-        return PublicBundle(identityKey: data.ikPub, signingKey: data.ikSignPub, signedPreKey: data.spkPub,
-                            signedPreKeySig: data.spkSig, oneTimePreKeys: data.oneTimePreKeys.map { .init(id: $0.id, key: $0.pub) })
+        try CrossProcessLock.run {
+            reload()
+            if data.oneTimePreKeys.isEmpty { _ = try generateOneTimePreKeys(otpkCount) }
+            return PublicBundle(identityKey: data.ikPub, signingKey: data.ikSignPub, signedPreKey: data.spkPub,
+                                signedPreKeySig: data.spkSig, oneTimePreKeys: data.oneTimePreKeys.map { .init(id: $0.id, key: $0.pub) })
+        }
     }
 
     func generateOneTimePreKeys(_ n: Int) throws -> [OneTimePreKey] {
+        try CrossProcessLock.run { reload(); return try generateLocked(n) }
+    }
+
+    private func generateLocked(_ n: Int) throws -> [OneTimePreKey] {
         var made: [OneTimePreKey] = []
         for _ in 0..<n {
             let k = Primitives.x25519KeyPair()
@@ -74,15 +87,20 @@ final class IdentityStore {
     }
 
     func oneTimePreKey(_ id: Int?) -> KeyPair? {
-        guard let id, let o = data.oneTimePreKeys.first(where: { $0.id == id }) else { return nil }
+        guard let id else { return nil }
+        reload()
+        guard let o = data.oneTimePreKeys.first(where: { $0.id == id }) else { return nil }
         return kp(o.priv, o.pub)
     }
 
     func consumeOneTimePreKey(_ id: Int?) {
         guard let id else { return }
-        let before = data.oneTimePreKeys.count
-        data.oneTimePreKeys.removeAll { $0.id == id }
-        if data.oneTimePreKeys.count != before { try? persist() }
+        CrossProcessLock.run {
+            reload()
+            let before = data.oneTimePreKeys.count
+            data.oneTimePreKeys.removeAll { $0.id == id }
+            if data.oneTimePreKeys.count != before { try? persist() }
+        }
     }
 
     private func persist() throws { try Vault.shared.writeSealed(file, JSONEncoder().encode(data)) }
@@ -92,39 +110,32 @@ final class IdentityStore {
     }
 }
 
-/// One Double Ratchet session per peer, vault-sealed, cached in memory.
+/// One Double Ratchet session per peer, vault-sealed. Always read from disk:
+/// the notification extension may have advanced a session since we last looked.
+/// Callers load-modify-save under CrossProcessLock.
 final class SessionStore {
-    private var cache: [String: Session] = [:]
-
     private func file(_ peer: String) -> URL { Paths.sessions.appendingPathComponent("s_\(Primitives.sha256Hex(peer)).bin") }
 
-    func has(_ peer: String) -> Bool { load(peer) != nil }
+    func has(_ peer: String) -> Bool { FileManager.default.fileExists(atPath: file(peer).path) }
 
     func load(_ peer: String) -> Session? {
-        if let s = cache[peer] { return s }
-        guard let raw = Vault.shared.readSealed(file(peer)), let s = try? JSONDecoder().decode(Session.self, from: raw) else { return nil }
-        cache[peer] = s
-        return s
+        guard let raw = Vault.shared.readSealed(file(peer)) else { return nil }
+        return try? JSONDecoder().decode(Session.self, from: raw)
     }
 
     func save(_ peer: String, _ s: Session) throws {
         try Vault.shared.writeSealed(file(peer), JSONEncoder().encode(s))
-        cache[peer] = s
     }
 
     func drop(_ peer: String) {
-        cache[peer] = nil
         try? FileManager.default.removeItem(at: file(peer))
     }
-
-    func reload() { cache = [:] }
 }
 
 /// Sealed-sender access keys: ours (relay holds its SHA-256) and the ones contacts gave us.
 final class AccessKeys {
     private var ownFile: URL { Paths.keys.appendingPathComponent("access.bin") }
     private var peersFile: URL { Paths.keys.appendingPathComponent("peer_access.bin") }
-    private var peers: [String: String]?
 
     lazy var own: String = {
         if let d = Vault.shared.readSealed(ownFile), let s = String(data: d, encoding: .utf8) { return s }
@@ -138,26 +149,26 @@ final class AccessKeys {
     func of(_ peer: String) -> String? { load()[peer] }
 
     func remember(_ peer: String, _ key: String) {
-        var m = load()
-        guard m[peer] != key, (try? Primitives.unb64(key))?.count == 32 else { return }
-        m[peer] = key
-        save(m)
+        CrossProcessLock.run {
+            var m = load()
+            guard m[peer] != key, (try? Primitives.unb64(key))?.count == 32 else { return }
+            m[peer] = key
+            save(m)
+        }
     }
 
     func forget(_ peer: String) {
-        var m = load()
-        if m.removeValue(forKey: peer) != nil { save(m) }
+        CrossProcessLock.run {
+            var m = load()
+            if m.removeValue(forKey: peer) != nil { save(m) }
+        }
     }
 
     private func load() -> [String: String] {
-        if let p = peers { return p }
-        let m = Vault.shared.readSealed(peersFile).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
-        peers = m
-        return m
+        Vault.shared.readSealed(peersFile).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
     }
 
     private func save(_ m: [String: String]) {
-        peers = m
         try? Vault.shared.writeSealed(peersFile, JSONEncoder().encode(m))
     }
 }
@@ -165,14 +176,16 @@ final class AccessKeys {
 /// Session starts already accepted, so a replayed one can't roll a session back.
 final class SeenSessionStarts {
     private let file = Paths.keys.appendingPathComponent("seen_session_starts")
-    private lazy var seen: [String] = (try? String(contentsOf: file, encoding: .utf8))?
-        .split(separator: "\n").map(String.init).filter { $0.count == 64 } ?? []
+    private var seen: [String] {
+        (try? String(contentsOf: file, encoding: .utf8))?.split(separator: "\n").map(String.init).filter { $0.count == 64 } ?? []
+    }
     private static let max = 5000
 
     func contains(ik: Data, ek: Data) -> Bool { seen.contains(Primitives.sha256Hex(ik + ek)) }
 
     func add(ik: Data, ek: Data) {
         let fp = Primitives.sha256Hex(ik + ek)
+        var seen = self.seen
         guard !seen.contains(fp) else { return }
         seen.append(fp)
         if seen.count > Self.max { seen.removeFirst(seen.count - Self.max) }

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ChatListView: View {
     @EnvironmentObject var m: Messenger
+    @EnvironmentObject var model: AppModel
     @State private var path: [String] = []
     @State private var showNew = false
     @State private var showSettings = false
@@ -53,7 +54,18 @@ struct ChatListView: View {
                 NewChatView { conv in showNew = false; path = [conv] }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .onAppear(perform: openTapped)
+            .onChange(of: model.openConversation) { _ in openTapped() }
         }
+    }
+
+    /// A notification was tapped: show that chat.
+    private func openTapped() {
+        guard let conv = model.openConversation else { return }
+        model.openConversation = nil
+        showNew = false
+        showSettings = false
+        path = [conv]
     }
 }
 

@@ -5,9 +5,11 @@ import os
 /// The messaging engine (the iOS port of the Android client's MessagingService).
 ///
 /// Everything runs on the main actor: encryption and decryption are short,
-/// synchronous steps, so each one is atomic with respect to the others
-/// without a lock. Anything that waits on the relay (fetching a bundle,
-/// uploading a file) suspends between steps, never in the middle of one.
+/// synchronous steps, so within this process each is atomic. The app's
+/// notification extension is another process sharing the same keys, so each
+/// such step also runs under CrossProcessLock and reads its session from disk.
+/// Anything that waits on the relay (fetching a bundle, uploading a file)
+/// suspends between steps, never in the middle of one.
 @MainActor
 final class Messenger: ObservableObject {
     static let groupPrefix = "g:"
@@ -26,8 +28,16 @@ final class Messenger: ObservableObject {
 
     let log = Logger(subsystem: "com.cellosig.app", category: "cellosig")
 
-    let account: Account
+    private(set) var account: Account
     var me: String { account.phone }
+    /// Running inside the notification extension: fetch, decrypt, store, then quit.
+    let isExtension: Bool
+
+    #if DEBUG
+    static let pushEnv = "sandbox"
+    #else
+    static let pushEnv = "production"
+    #endif
     let db: Database
     let identity: IdentityStore
     private let sessions = SessionStore()
@@ -47,8 +57,8 @@ final class Messenger: ObservableObject {
     /// The chat on screen (its messages are read as they arrive).
     var activeChat: String?
     var readReceipts: Bool {
-        get { UserDefaults.standard.object(forKey: "read_receipts") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "read_receipts"); touch() }
+        get { Shared.defaults.object(forKey: "read_receipts") as? Bool ?? true }
+        set { Shared.defaults.set(newValue, forKey: "read_receipts"); touch() }
     }
     /// New incoming message the user isn't looking at: (conversation, sender, preview).
     var onIncoming: ((String, String, String) -> Void)?
@@ -65,8 +75,9 @@ final class Messenger: ObservableObject {
 
     enum SendError: Error { case notRegistered(String), timeout, toSelf, noSession }
 
-    init(account: Account) throws {
+    init(account: Account, extensionMode: Bool = false) throws {
         self.account = account
+        isExtension = extensionMode
         db = try Database()
         identity = try IdentityStore.loadOrCreate(phone: account.phone)
         let url = URL(string: account.relayURL)!
@@ -81,6 +92,7 @@ final class Messenger: ObservableObject {
 
     func start() {
         relay.connect()
+        if isExtension { return }
         sealedRelay.connect()
         expiryTimer?.invalidate()
         expiryTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -96,8 +108,45 @@ final class Messenger: ObservableObject {
     }
 
     func foregrounded() {
+        // The notification extension may have moved us to a new relay address meanwhile.
+        if let a = Account.load(), a.relayURL != account.relayURL { moveRelay(to: a.relayURL) }
         relay.reconnectNow()
         sealedRelay.reconnectNow()
+        touch()  // it may also have stored messages
+    }
+
+    /// The relay announced (signed) that it now lives at `url`.
+    func moveRelay(to url: String) {
+        guard let u = URL(string: url) else { return }
+        account.relayURL = url
+        log.info("relay moved; following it")
+        blobs = BlobClient(relay: u, user: account.phone, token: account.token)
+        relay.move(to: u)
+        sealedRelay.move(to: u)
+    }
+
+    // MARK: - Push notifications
+
+    private struct SetPush: Encodable { var type = "setPush"; var token: String; var env: String }
+
+    /// The APNs device token (hex) for this iPhone; the relay uses it to wake us.
+    func setPushToken(_ hex: String) {
+        Shared.defaults.set(hex, forKey: "apns_token")
+        if relay.isConnected { relay.send(SetPush(token: hex, env: Self.pushEnv)) }
+    }
+
+    // For the extension: when has the relay finished handing us mail?
+    private var loggedIn = false
+    private var lastActivity = Date()
+    private var pendingOps = 0
+
+    /// Wait until signed in, everything queued is handled, and the relay has been quiet a moment.
+    func waitUntilQuiet(maxSeconds: Double) async {
+        let deadline = Date().addingTimeInterval(maxSeconds)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if loggedIn && inbound.isEmpty && !draining && pendingOps == 0 && Date().timeIntervalSince(lastActivity) > 1.5 { return }
+        }
     }
 
     func touch() { revision &+= 1 }
@@ -107,6 +156,7 @@ final class Messenger: ObservableObject {
     // MARK: - Connection
 
     private struct RegisterFrame: Encodable { var type = "register"; var username: String; var token: String; var bundle: PublicBundle; var accessKeyHash: String }
+    private struct LoginFrame: Encodable { var type = "login"; var username: String; var token: String }
     private struct Simple: Encodable { var type: String }
     private struct AddPreKeys: Encodable { var type = "addPreKeys"; var oneTimePreKeys: [OneTimePreKey] }
     private struct Received: Encodable { var type = "received"; var mid: Int64 }
@@ -117,12 +167,20 @@ final class Messenger: ObservableObject {
 
     private func onConnected() {
         connected = true
+        lastActivity = Date()
         log.info("connected to relay")
+        if isExtension {
+            // Just collect mail; the app does the rest when it next opens.
+            relay.send(LoginFrame(username: me, token: account.token))
+            relay.send(Simple(type: "getSenderCert"))
+            return
+        }
         if let bundle = try? identity.publicBundle(otpkCount: Self.otpkTarget) {
             relay.send(RegisterFrame(username: me, token: account.token, bundle: bundle, accessKeyHash: accessKeys.ownHash))
         }
         relay.send(Simple(type: "getSenderCert"))
         relay.send(Simple(type: "getPreKeyCount"))
+        if let t = Shared.defaults.string(forKey: "apns_token") { relay.send(SetPush(token: t, env: Self.pushEnv)) }
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             await retryUnsent()
@@ -140,6 +198,7 @@ final class Messenger: ObservableObject {
     // MARK: - Inbound frames
 
     private func handleInbound(_ f: InboundFrame) {
+        lastActivity = Date()
         switch f.type {
         case "bundle":
             if let b = f.bundle { resolveBundle(b.username, .success(b)) }
@@ -148,7 +207,7 @@ final class Messenger: ObservableObject {
             inbound.append(f)
             if !draining { draining = true; Task { await drainInbound() } }
         case "ack":
-            if let row = f.id.flatMap { Int64($0) } { markSent(row) }
+            if let row = f.id.flatMap({ Int64($0) }) { markSent(row) }
         case "preKeysLow", "preKeyCount":
             replenishPreKeys(f.count ?? 0)
         case "lookupResult":
@@ -168,6 +227,7 @@ final class Messenger: ObservableObject {
             if f.reason == "auth_failed" { authFailed = true }
             if f.reason == "unknown_user", let u = f.username { resolveBundle(u, .failure(SendError.notRegistered(u))) }
         case "registered", "logged_in":
+            loggedIn = true
             pstnAvailable = f.pstn == true
         case "pstn":
             if let call = f.call { onCallSignal?(f.from ?? f.to ?? "", call, nowMs()) }
@@ -325,10 +385,13 @@ final class Messenger: ObservableObject {
     @discardableResult
     private func sendPayload(_ peer: String, _ payload: Payload, relayId: String?, fresh: Bool = false) async throws -> Bool {
         guard peer != me else { throw SendError.toSelf }
+        pendingOps += 1
+        defer { pendingOps -= 1; lastActivity = Date() }
         let bundle = (fresh || !sessions.has(peer)) ? try await fetchBundle(peer) : nil
         var withKey = payload
         withKey.ak = accessKeys.own
-        let enc = try encrypt(for: peer, try withKey.encode(), bundle: bundle, fresh: fresh)
+        let plaintext = try withKey.encode()
+        let enc = try CrossProcessLock.run { try encrypt(for: peer, plaintext, bundle: bundle, fresh: fresh) }
         if enc.keysChanged { noteSafetyNumberChange(peer) }
         let eph = (payload.expire ?? 0) > 0 && payload.t != "timer"
         if trySendSealed(peer, enc, relayId: relayId, eph: eph) { return true }
@@ -493,8 +556,17 @@ final class Messenger: ObservableObject {
         guard let opened = await unseal(raw) else { return }
         let (from, env) = opened
         let sentAt = raw.age.map { nowMs() - $0 } ?? raw.ts ?? nowMs()
+        // Under the shared lock: the extension and the app may both have been handed
+        // this frame; only one decrypts it (the other sees it in seen_frames).
+        var outcome: Result<(Data, Bool), Error>?
+        CrossProcessLock.run {
+            if let mid = raw.mid, (try? db.scalarInt("SELECT 1 FROM seen_frames WHERE mid = ?", mid)) != nil { return }
+            outcome = Result { try decrypt(from: from, env) }
+            if let mid = raw.mid { try? db.run("INSERT OR IGNORE INTO seen_frames(mid, at) VALUES(?, ?)", mid, nowMs()) }
+        }
+        guard let outcome else { return }
         let decrypted: (Data, Bool)
-        do { decrypted = try decrypt(from: from, env) }
+        do { decrypted = try outcome.get() }
         catch {
             log.warning("can't decrypt \(env.kind, privacy: .public) message from \(PhoneNumbers.mask(from), privacy: .public)")
             if !(error is ReplayedSessionStart) { Task { await requestReset(from) } }
