@@ -26,8 +26,14 @@ final class KeepAlive {
 
     /// Start (or resume after a call, voice note or interruption). If iOS won't
     /// hand over the audio right now (e.g. a call is just giving it back), try again shortly.
+    /// A voice note is recording or playing: it owns the audio session until it's done
+    /// (switching the session under it would cut off the microphone).
+    var heldByMedia = false {
+        didSet { if heldByMedia { stop() } else { start() } }
+    }
+
     func start() {
-        guard enabled, !CallManager.shared.inCall else { return }
+        guard enabled, !CallManager.shared.inCall, !heldByMedia else { return }
         observe()
         if attempt() { retry?.cancel(); retry = nil } else { scheduleRetry() }
     }
@@ -62,7 +68,7 @@ final class KeepAlive {
             defer { self.retry = nil }
             for delay in [1, 2, 5, 10, 30] as [UInt64] {
                 try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
-                guard !Task.isCancelled, self.enabled, !CallManager.shared.inCall else { return }
+                guard !Task.isCancelled, self.enabled, !CallManager.shared.inCall, !self.heldByMedia else { return }
                 if self.attempt() { return }
             }
         }

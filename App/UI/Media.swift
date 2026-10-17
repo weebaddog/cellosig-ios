@@ -101,7 +101,7 @@ final class VoiceRecorder: NSObject, ObservableObject {
 
     func start() async -> Bool {
         guard !recording, !CallManager.shared.inCall, await AVAudioApplication.requestRecordPermission() else { return false }
-        KeepAlive.shared.stop()
+        KeepAlive.shared.heldByMedia = true
         let s = AVAudioSession.sharedInstance()
         do {
             try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
@@ -114,13 +114,14 @@ final class VoiceRecorder: NSObject, ObservableObject {
                 AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 22_050, AVNumberOfChannelsKey: 1,
                 AVEncoderBitRateKey: 32_000, AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
             ])
-            guard r.record(forDuration: Self.maxSeconds) else { return false }
+            guard r.record(forDuration: Self.maxSeconds) else { KeepAlive.shared.heldByMedia = false; return false }
             recorder = r
             file = url
             started = Date()
             recording = true
             return true
         } catch {
+            KeepAlive.shared.heldByMedia = false
             return false
         }
     }
@@ -146,7 +147,7 @@ final class VoiceRecorder: NSObject, ObservableObject {
         started = nil
         recording = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        KeepAlive.shared.start()
+        KeepAlive.shared.heldByMedia = false
     }
 }
 
@@ -167,6 +168,7 @@ struct VoiceNoteView: View {
                 Text(player.duration.map { CallManager.formatDuration(Int($0.rounded())) } ?? "Voice note").font(.caption2).opacity(0.8)
             }
         }
+        .onDisappear { player.stop() }
     }
 }
 
@@ -179,14 +181,14 @@ final class VoicePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var timer: Timer?
 
     func toggle(load: () -> Data?) {
-        if playing { player?.pause(); stopTimer(); playing = false; return }
+        if playing { player?.pause(); stopTimer(); playing = false; KeepAlive.shared.heldByMedia = false; return }
         if player == nil {
             guard !CallManager.shared.inCall, let data = load(), let p = try? AVAudioPlayer(data: data) else { return }
             p.delegate = self
             player = p
             duration = p.duration
         }
-        KeepAlive.shared.stop()
+        KeepAlive.shared.heldByMedia = true
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
         try? AVAudioSession.sharedInstance().setActive(true)
         player?.play()
@@ -201,13 +203,23 @@ final class VoicePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func stopTimer() { timer?.invalidate(); timer = nil }
 
+    /// The note scrolled away or the chat closed.
+    func stop() {
+        guard playing else { return }
+        player?.stop()
+        stopTimer()
+        playing = false
+        progress = 0
+        KeepAlive.shared.heldByMedia = false
+    }
+
     nonisolated func audioPlayerDidFinishPlaying(_ p: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor in
             self.stopTimer()
             self.playing = false
             self.progress = 0
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            KeepAlive.shared.start()
+            KeepAlive.shared.heldByMedia = false
         }
     }
 }

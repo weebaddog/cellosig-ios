@@ -62,10 +62,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// In the foreground the chat list shows new messages itself.
+    /// In the foreground the chat list shows new messages itself, but a reminder
+    /// you set must still show (it was being swallowed while the app was open).
     func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
-        done([])
+        done(n.request.identifier.hasPrefix("reminder:") ? [.banner, .list, .sound] : [])
     }
 }
 

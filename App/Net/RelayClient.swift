@@ -1,8 +1,14 @@
 import CellosigCore
 import Foundation
+import Network
 
 /// One WebSocket to the relay, reconnecting with exponential backoff + jitter.
 /// Frames are delivered on the main actor, in order.
+///
+/// A socket can die without any error (Wi-Fi to cellular, a NAT forgetting
+/// us): every ping must come back within `pongTimeout`, or the connection is
+/// treated as dead and replaced. The connection is also renewed as soon as the
+/// phone's network changes.
 @MainActor
 final class RelayClient {
     private(set) var url: URL
@@ -12,6 +18,12 @@ final class RelayClient {
     private var closed = true
     private var generation = 0
     private var pingTimer: Timer?
+    private var pathMonitor: NWPathMonitor?
+    private var lastPath: String?
+    private var pingSeq = 0
+    private var awaitingPong: Int?
+    private static let pongTimeout: UInt64 = 12
+    private static let connectTimeout: UInt64 = 20
 
     var onFrame: ((InboundFrame) -> Void)?
     var onConnected: (() -> Void)?
@@ -30,12 +42,16 @@ final class RelayClient {
 
     func connect() {
         closed = false
+        watchNetwork()
         open()
     }
 
     func close() {
         closed = true
         generation += 1
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        lastPath = nil
         pingTimer?.invalidate()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -64,6 +80,11 @@ final class RelayClient {
     private func open() {
         generation += 1
         let gen = generation
+        pingTimer?.invalidate()
+        awaitingPong = nil
+        // A new socket must sign in again: report the old one gone, so the next
+        // successful connect runs onConnected (login, push tokens, retries).
+        setConnected(false)
         task?.cancel(with: .goingAway, reason: nil)
         let t = session.webSocketTask(with: url)
         t.maximumMessageSize = 2 * 1024 * 1024
@@ -76,7 +97,32 @@ final class RelayClient {
                 if error == nil { self.attempt = 0; self.setConnected(true); self.startPings(gen) } else { self.retry(gen) }
             }
         }
+        // A handshake that hangs never calls back at all: give up on it after a while.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.connectTimeout * 1_000_000_000)
+            guard let self, gen == self.generation, !self.isConnected else { return }
+            self.retry(gen)
+        }
         receive(t, gen)
+    }
+
+    /// Reconnect at once when the network changes (the old socket is usually dead
+    /// by then, and waiting for a ping to notice would cost up to half a minute).
+    private func watchNetwork() {
+        guard pathMonitor == nil else { return }
+        let m = NWPathMonitor()
+        m.pathUpdateHandler = { [weak self] path in
+            let desc = path.status == .satisfied ? path.availableInterfaces.map { "\($0.type)" }.joined(separator: ",") : "none"
+            Task { @MainActor in
+                guard let self, !self.closed else { return }
+                defer { self.lastPath = desc }
+                guard let before = self.lastPath, before != desc, path.status == .satisfied else { return }
+                self.attempt = 0
+                self.open()
+            }
+        }
+        m.start(queue: .global(qos: .utility))
+        pathMonitor = m
     }
 
     private func receive(_ t: URLSessionWebSocketTask, _ gen: Int) {
@@ -98,10 +144,19 @@ final class RelayClient {
         pingTimer?.invalidate()
         pingTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, gen == self.generation else { return }
-                self.task?.sendPing { error in
-                    if error != nil { Task { @MainActor in if gen == self.generation { self.retry(gen) } } }
+                guard let self, gen == self.generation, let t = self.task else { return }
+                self.pingSeq += 1
+                let seq = self.pingSeq
+                self.awaitingPong = seq
+                t.sendPing { error in
+                    Task { @MainActor in
+                        if self.awaitingPong == seq { self.awaitingPong = nil }
+                        if error != nil, gen == self.generation { self.retry(gen) }
+                    }
                 }
+                // No pong at all: the socket is dead even though nothing said so.
+                try? await Task.sleep(nanoseconds: Self.pongTimeout * 1_000_000_000)
+                if self.awaitingPong == seq, gen == self.generation { self.retry(gen) }
             }
         }
     }

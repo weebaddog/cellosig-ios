@@ -172,7 +172,10 @@ struct ChatView: View {
             }
         } message: { Text("The message is removed from everyone's phone in this chat. They see that a message was deleted.") }
         .onAppear { m.activeChat = conv; Task { await m.markRead(conv) } }
-        .onDisappear { if m.activeChat == conv { m.activeChat = nil } }
+        .onDisappear {
+            if m.activeChat == conv { m.activeChat = nil }
+            if recorder.recording { recorder.cancel() }   // don't keep the microphone on after leaving
+        }
         .onChange(of: msgs.count) { _ in Task { await m.markRead(conv) } }
     }
 
