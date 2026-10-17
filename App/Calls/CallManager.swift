@@ -327,8 +327,8 @@ final class CallManager: NSObject, ObservableObject {
                 try await conn.setLocal(offer)
                 await self.awaitGathering()
                 guard self.isCurrent(s.id), let sdp = conn.localDescription?.sdp, let m = self.messenger else { return }
-                let offer = CallSignal(id: s.id, kind: "offer", sdp: sdp)
-                let sent = s.pstn ? m.sendPstnSignal(s.peer, offer) : await m.sendCallSignal(s.peer, offer)
+                let signal = CallSignal(id: s.id, kind: "offer", sdp: sdp)
+                let sent = s.pstn ? m.sendPstnSignal(s.peer, signal) : await m.sendCallSignal(s.peer, signal)
                 guard sent else { self.end(s.id, "failed", notify: false); return }
                 self.armTimeout(s.id) { $0.end(s.id, "no_answer", notify: true, signal: "missed") }
             } catch {
