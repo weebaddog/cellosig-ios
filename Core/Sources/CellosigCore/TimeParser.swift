@@ -8,6 +8,7 @@ public enum TimeParser {
     public struct Suggestion: Equatable {
         public let at: Date
         public let label: String
+        public init(at: Date, label: String) { self.at = at; self.label = label }
     }
 
     private static let unit = "(minutes?|mins?|hours?|hrs?|days?)"

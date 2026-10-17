@@ -40,8 +40,25 @@ Certificates, IDs & Profiles with the App Groups capability
 Each TestFlight build asks the export-compliance question (the app uses its
 own end-to-end encryption); answer it in App Store Connect.
 
-## Not yet on iPhone
+## Features
 
-Push notifications (relay → APNs, needs an APNs key), calls, Tor/onion
-routing, relay auto-discovery (enter the current relay address at sign-up),
-stickers/voice notes/reminders, app lock.
+Everything the Android app does for messaging (sealed sender, safety numbers,
+groups, files, polls, reactions, disappearing messages, profiles, requests,
+blocking) plus:
+
+- **Calls**: WebRTC voice (`App/Calls/CallManager.swift`), SDP only inside the
+  E2E channel, TURN-only when the relay offers TURN. CallKit shows them on the
+  lock screen; the relay wakes a closed app with a VoIP push (the caller's app
+  flags the offer with `call: true`).
+- **Push**: the notification extension fetches and decrypts; the relay's push
+  carries no sender or content. Needs an APNs key on the relay
+  (`APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_PATH`) — the same key sends VoIP pushes.
+- Voice notes, stickers (built-in emoji pack), animated GIFs, reminders
+  (`TimeParser` finds times like "tomorrow at 5"), App lock (Face ID / passcode).
+- Pictures from others are decoded scaled down (≤1600 px, GIFs ≤50 frames).
+
+## Not on iPhone
+
+- Tor/onion routing and the onion-based relay lookup: the app follows the
+  relay through signed pushes instead (enter the current address at sign-up).
+- Calls with ordinary phone numbers (the relay's PSTN bridge) — Android only.

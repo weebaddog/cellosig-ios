@@ -33,7 +33,7 @@ extension Messenger {
         let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: at)
         let req = UNNotificationRequest(identifier: id, content: c, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: false))
         guard (try? await center.add(req)) != nil else { return false }
-        try? db.run("INSERT INTO reminders(id, conv, msgRow, text, at) VALUES(?, ?, ?, ?, ?)",
+        _ = try? db.run("INSERT INTO reminders(id, conv, msgRow, text, at) VALUES(?, ?, ?, ?, ?)",
                     id, msg.conv, msg.id, String(text.prefix(200)), Int64(at.timeIntervalSince1970 * 1000))
         touch()
         return true
@@ -41,7 +41,7 @@ extension Messenger {
 
     /// Upcoming reminders (ones that already went off are cleared out).
     func reminders(conv: String? = nil) -> [Reminder] {
-        try? db.run("DELETE FROM reminders WHERE at < ?", nowMs() - 60_000)
+        _ = try? db.run("DELETE FROM reminders WHERE at < ?", nowMs() - 60_000)
         let rows = (conv.map { try? db.query("SELECT * FROM reminders WHERE conv = ? ORDER BY at", $0) }
                     ?? (try? db.query("SELECT * FROM reminders ORDER BY at"))) ?? []
         return rows.map {
@@ -52,13 +52,13 @@ extension Messenger {
 
     func cancelReminder(_ id: String) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [id])
-        try? db.run("DELETE FROM reminders WHERE id = ?", id)
+        _ = try? db.run("DELETE FROM reminders WHERE id = ?", id)
         touch()
     }
 
     func cancelReminders(conv: String) {
         let ids = reminders(conv: conv).map(\.id)
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
-        try? db.run("DELETE FROM reminders WHERE conv = ?", conv)
+        _ = try? db.run("DELETE FROM reminders WHERE conv = ?", conv)
     }
 }
