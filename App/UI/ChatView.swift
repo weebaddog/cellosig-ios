@@ -115,6 +115,7 @@ struct ChatView: View {
                         Text(m.title(conv)).font(.headline).lineLimit(1).foregroundStyle(.primary)
                         HStack(spacing: 4) {
                             Image(systemName: "lock.fill")
+                            if c?.shield == true { Image(systemName: "eye.slash") }
                             if !isGroup && m.hasProfileName(conv) { Text(PhoneNumbers.pretty(conv)) }
                             else if isGroup { Text("\(m.recipients(conv).count + 1) members") }
                             else { Text("End-to-end encrypted") }
@@ -164,6 +165,13 @@ struct ChatView: View {
                     }
                 }
                 Menu {
+                    if c?.request != true {
+                        let shield = c?.shield ?? false
+                        Button { Task { await m.setShield(conv, !shield) } } label: {
+                            Label(shield ? "Allow screenshots" : "Block screenshots",
+                                  systemImage: shield ? "camera.viewfinder" : "eye.slash")
+                        }
+                    }
                     if !isGroup {
                         Button(role: .destructive) { m.block(conv); dismiss() } label: { Label("Block", systemImage: "hand.raised") }
                     }
@@ -255,9 +263,11 @@ struct ChatView: View {
 
     private func withLifecycle(_ v: some View, _ msgs: [Message]) -> some View {
         v
-        .onAppear { m.activeChat = conv; Task { await m.markRead(conv) } }
+        .onAppear { m.activeChat = conv; ScreenShield.chat = m.shieldOf(conv); Task { await m.markRead(conv) } }
+        .onChange(of: m.conversation(conv)?.shield ?? false) { on in ScreenShield.chat = on }
         .onDisappear {
             if m.activeChat == conv { m.activeChat = nil }
+            ScreenShield.chat = false
             if recorder.recording { recorder.cancel() }   // don't keep the microphone on after leaving
         }
         .onChange(of: msgs.last?.id) { _ in Task { await m.markRead(conv) } }

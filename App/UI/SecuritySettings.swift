@@ -8,6 +8,7 @@ struct SecuritySettings: View {
     @State private var confirmErase = false
     @State private var lockdown = Lockdown.on
     @State private var passwordSet = AppPassword.isSet
+    @AppStorage(ScreenShield.key, store: Shared.defaults) private var blockScreenshots = false
 
     var body: some View {
         Section {
@@ -39,6 +40,13 @@ struct SecuritySettings: View {
                 passwordSet = true
                 model.lockEnabled = true
             }
+        }
+
+        Section {
+            Toggle("Block screenshots", isOn: $blockScreenshots)
+                .onChange(of: blockScreenshots) { _ in ScreenShield.refresh() }
+        } footer: {
+            Text("Screenshots and screen recordings of cellosig come out blank. To block them in just one chat or group (for everyone in it), use Block screenshots in that chat's ••• menu.")
         }
 
         Section {

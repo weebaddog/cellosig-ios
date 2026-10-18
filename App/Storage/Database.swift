@@ -202,6 +202,13 @@ final class Database {
             PRAGMA user_version = 4;
             """)
         }
+        if version < 5 {
+            // "Block screenshots" for a chat (set by anyone in it, for everyone in it).
+            try exec("""
+            ALTER TABLE conversations ADD COLUMN shield INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 5;
+            """)
+        }
         // The data folder just moved into the App Group: files stored by full path moved with it.
         if let moved = Paths.movedFrom {
             let (old, new) = moved

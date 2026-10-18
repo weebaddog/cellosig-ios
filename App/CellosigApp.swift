@@ -322,6 +322,8 @@ struct RootView: View {
         .onOpenURL { url in if let conv = AppLinks.conversation(from: url) { model.openConversation = conv } }
         // The widget shows message previews only while they're allowed.
         .onChange(of: notifyPreview) { _ in ExtensionBridge.shared.writeSnapshots() }
+        // Block screenshots (Settings → Security): needs the window, so not before it's on screen.
+        .task { ScreenShield.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in
             captured = UIScreen.main.isCaptured
         }

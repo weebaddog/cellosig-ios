@@ -25,8 +25,12 @@ struct EncryptionInfo: View {
                 row(!preview, "Notifications",
                     preview ? "Show who wrote and what — on the Lock Screen too, where anyone holding the phone can read them. (Settings → Privacy)"
                             : "Show only “New message”: nothing readable on the Lock Screen.")
-                row(false, "Screenshots and things you share out",
-                    "A screenshot, or a photo or file you save or share to another app, leaves cellosig's protection.")
+                let shielded = Shared.defaults.bool(forKey: ScreenShield.key) || conv.map { m.shieldOf($0) } == true
+                row(shielded, "Screenshots",
+                    shielded ? "Blocked: screenshots and screen recordings come out blank. (A camera pointed at the screen still works.)"
+                             : "Allowed. Turn on Block screenshots for this chat (••• menu) or for all of cellosig (Settings → Security).")
+                row(false, "Things you share out",
+                    "A photo or file you save or share to another app leaves cellosig's protection.")
             } header: { Text("On this iPhone") }
 
             Section {

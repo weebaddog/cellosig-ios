@@ -58,6 +58,7 @@ struct Conversation: Identifiable, Equatable {
     var request: Bool
     var pinnedAt: Int64?
     var timerSec: Int
+    var shield: Bool
 
     var isGroup: Bool { id.hasPrefix(Messenger.groupPrefix) }
 
@@ -69,6 +70,7 @@ struct Conversation: Identifiable, Equatable {
         request = r.bool("request")
         pinnedAt = r.int("pinnedAt")
         timerSec = Int(r.int("timerSec") ?? 0)
+        shield = r.bool("shield")
     }
 }
 

@@ -143,7 +143,7 @@ public struct GroupRef: Codable, Equatable {
 }
 
 /// What travels inside the end-to-end encryption. Kinds (`t`): text, file,
-/// receipt, group, timer, poll, vote, reaction, call, profile, reset.
+/// receipt, group, timer, shield, poll, vote, reaction, call, profile, reset.
 public struct Payload: Codable, Equatable {
     public var t: String
     public var id: String?

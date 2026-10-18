@@ -395,6 +395,22 @@ final class Messenger: ObservableObject {
         for r in recipients(conv) { _ = try? await sendPayload(r, p, relayId: nil) }
     }
 
+    /// "Block screenshots" in a chat: on for everyone in it (1:1 or group), like the timer.
+    func setShield(_ conv: String, _ on: Bool) async {
+        try? db.run("INSERT OR IGNORE INTO conversations(id) VALUES(?)", conv)
+        try? db.run("UPDATE conversations SET shield = ? WHERE id = ?", on, conv)
+        noteSystem(conv, "You \(Self.shieldSentence(on))")
+        let p = Payload(t: "shield", id: newId(), body: on ? "on" : "off", group: groupRef(conv))
+        for r in recipients(conv) { _ = try? await sendPayload(r, p, relayId: nil) }
+    }
+
+    func shieldOf(_ conv: String) -> Bool { ((try? db.scalarInt("SELECT shield FROM conversations WHERE id = ?", conv)) ?? 0) != 0 }
+
+    static func shieldSentence(_ on: Bool) -> String {
+        on ? "turned on Block screenshots — screenshots and recordings of this chat come out blank."
+           : "turned off Block screenshots."
+    }
+
     /// Send to every recipient; sending -> sent (relay ack) | failed | unregistered.
     private func deliverTracked(_ conv: String, _ p: Payload, _ row: Int64) async {
         var unregistered = false
@@ -747,6 +763,13 @@ final class Messenger: ObservableObject {
             try? db.run("INSERT OR IGNORE INTO conversations(id, request) VALUES(?, ?)", conv, isRequest(conv, from))
             try? db.run("UPDATE conversations SET timerSec = ? WHERE id = ?", s, conv)
             noteSystem(conv, "\(Self.isGroup(conv) ? groupMemberName(from) : displayName(from)) \(Self.timerSentence(s))")
+        case "shield":
+            guard let conv = conversationFor(from, p.group) else { return }
+            let on = p.body == "on"
+            if shieldOf(conv) == on { return }
+            try? db.run("INSERT OR IGNORE INTO conversations(id, request) VALUES(?, ?)", conv, isRequest(conv, from))
+            try? db.run("UPDATE conversations SET shield = ? WHERE id = ?", on, conv)
+            noteSystem(conv, "\(Self.isGroup(conv) ? groupMemberName(from) : displayName(from)) \(Self.shieldSentence(on))")
         case "text", "file", "poll":
             onContent(from, p, ts)
         default: break
