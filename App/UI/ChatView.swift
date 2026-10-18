@@ -14,6 +14,8 @@ struct ChatView: View {
     @State private var limit = 300
     /// The newest message is on screen: new ones scroll into view (otherwise you're reading back; stay put).
     @State private var atBottom = true
+    /// The keyboard is up and you were at the bottom when it opened: keep the newest message in view.
+    @State private var keyboardStick = false
     @State private var editing: Message?
     @State private var editText = ""
     @State private var unsending: Message?
@@ -98,6 +100,22 @@ struct ChatView: View {
                     guard let last = msgs.last, atBottom || last.outgoing else { return }
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
+                // The keyboard coming up shrinks the list but leaves it scrolled where it was, so the
+                // newest messages ended up hidden behind the keyboard. If you were at the bottom, stay there.
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                    keyboardStick = atBottom
+                    scrollToEnd(proxy, msgs, animated: false)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                    scrollToEnd(proxy, msgs, animated: true)
+                }
+                // (The suggestion bar appearing or the keyboard changing size moves it again.)
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
+                    scrollToEnd(proxy, msgs, animated: true)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+                    keyboardStick = false
+                }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if c?.request == true {
                         RequestBar(conv: conv) { dismiss() }
@@ -106,6 +124,13 @@ struct ChatView: View {
                     }
                 }
         }
+    }
+
+    /// Keep the newest message just above the keyboard (only if you were at the bottom when it opened).
+    private func scrollToEnd(_ proxy: ScrollViewProxy, _ msgs: [Message], animated: Bool) {
+        guard keyboardStick, let last = msgs.last?.id else { return }
+        if animated { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) } }
+        else { proxy.scrollTo(last, anchor: .bottom) }
     }
 
     @ToolbarContentBuilder
