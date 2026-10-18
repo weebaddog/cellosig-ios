@@ -249,7 +249,9 @@ final class AppModel: ObservableObject {
         let showContent = Shared.defaults.bool(forKey: "notify_preview")
         let c = UNMutableNotificationContent()
         c.title = showContent ? m.title(conv) : "cellosig"
-        c.body = showContent ? (Messenger.isGroup(conv) ? "\(m.groupMemberName(sender)): \(preview)" : preview) : "New message"
+        // Previews off: only that something arrived — never who or what.
+        c.body = showContent ? (Messenger.isGroup(conv) ? "\(m.groupMemberName(sender)): \(preview)" : preview)
+                             : (preview.hasPrefix("📞") ? "Missed call" : "New message")
         c.sound = .default
         c.threadIdentifier = conv
         c.userInfo = ["conv": conv]

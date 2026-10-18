@@ -1,6 +1,7 @@
 import CellosigCore
 import Combine
 import Foundation
+import UserNotifications
 import WidgetKit
 
 /// The app's side of the widget and the share extension: keeps the small
@@ -19,10 +20,11 @@ final class ExtensionBridge {
         // Chats change often; the files are rewritten at most every 1.5 s.
         watch = m.$revision
             .debounce(for: .seconds(1.5), scheduler: RunLoop.main)
-            .sink { [weak self] _ in self?.writeSnapshots() }
+            .sink { [weak self] _ in self?.updateBadge(); self?.writeSnapshots() }
         observeInbox()
         // Not right now: this runs while AppModel.shared is still being created, and the snapshot reads it.
         Task { @MainActor in
+            self.updateBadge()
             self.writeSnapshots()
             self.processInbox()
         }
@@ -31,10 +33,26 @@ final class ExtensionBridge {
     func detach() {
         watch = nil
         messenger = nil
+        lastBadge = -1
+        UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
         // Signed out: the widget and share sheet must not keep showing chats.
         SharedFiles.write(WidgetData(unread: 0, chats: [], showContent: false), to: SharedFiles.widget)
         SharedFiles.write(ShareTargets(targets: [], locked: true), to: SharedFiles.shareTargets)
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - App icon badge
+
+    /// The unread count on the app icon: you can see messages are waiting
+    /// without anything about them showing (only the number).
+    private var lastBadge = -1
+
+    func updateBadge() {
+        guard let m = messenger else { return }
+        let unread = m.conversations().reduce(0) { $0 + $1.unread }
+        guard unread != lastBadge else { return }
+        lastBadge = unread
+        UNUserNotificationCenter.current().setBadgeCount(unread) { _ in }
     }
 
     // MARK: - Snapshots

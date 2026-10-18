@@ -70,9 +70,13 @@ struct SettingsView: View {
                             .foregroundStyle(Database.encrypted ? Color.primary : Color.orange)
                     }
                 } footer: { Text("What's encrypted, what isn't, and what the relay can see.") }
-                Section("Privacy") {
+                Section {
                     Toggle("Send read receipts", isOn: Binding(get: { m.readReceipts }, set: { m.readReceipts = $0 }))
                     Toggle("Show sender and message in notifications", isOn: $notifyPreview)
+                } header: { Text("Privacy") } footer: {
+                    Text(notifyPreview
+                         ? "Notifications show who wrote and what — on the Lock Screen too."
+                         : "Notifications only say “New message” (with sound), never who or what. The app icon shows how many are waiting.")
                 }
                 AppearanceSection()
                 if AppGroup.container == nil {
