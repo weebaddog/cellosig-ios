@@ -74,10 +74,11 @@ struct SecuritySettings: View {
                     Label(f.what, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
                 }
             }
-            // Live: re-checked every 15 s while cellosig is open.
+            Toggle("Check live", isOn: Binding(get: { security.live }, set: { security.live = $0 }))
+            // Live: re-checked every 15 s while cellosig is open; otherwise each time you open it.
             TimelineView(.periodic(from: .now, by: 5)) { _ in
-                Label("Checking live · last check \(security.lastChecked.formatted(.relative(presentation: .numeric)))",
-                      systemImage: "dot.radiowaves.left.and.right")
+                Label("\(security.live ? "Checking every 15 s while open" : "Checking when you open cellosig") · last check \(security.lastChecked.formatted(.relative(presentation: .numeric)))",
+                      systemImage: security.live ? "dot.radiowaves.left.and.right" : "clock")
                     .font(.caption).foregroundStyle(.secondary)
             }
             switch SecurityCheck.appleLockdownMode {

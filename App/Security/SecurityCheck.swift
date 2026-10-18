@@ -114,10 +114,21 @@ final class SecurityMonitor: ObservableObject {
     private var timer: Timer?
     private var scanning = false
 
-    /// cellosig is on screen: check now, then every 15 s.
+    static let liveKey = "live_security_check"
+    /// Settings → Security check → "Check live" (on unless turned off).
+    var live: Bool {
+        get { Shared.defaults.object(forKey: Self.liveKey) as? Bool ?? true }
+        set {
+            Shared.defaults.set(newValue, forKey: Self.liveKey)
+            objectWillChange.send()
+            if newValue { resume() } else { pause() }
+        }
+    }
+
+    /// cellosig is on screen: check now, then (if live) every 15 s.
     func resume() {
         refresh()
-        guard timer == nil else { return }
+        guard live, timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
             Task { @MainActor in SecurityMonitor.shared.refresh() }
         }
