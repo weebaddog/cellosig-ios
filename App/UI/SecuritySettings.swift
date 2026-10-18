@@ -8,6 +8,7 @@ struct SecuritySettings: View {
     @State private var confirmErase = false
     @State private var lockdown = Lockdown.on
     @State private var passwordSet = AppPassword.isSet
+    @ObservedObject private var security = SecurityMonitor.shared
     @AppStorage(ScreenShield.key, store: Shared.defaults) private var blockScreenshots = false
 
     var body: some View {
@@ -65,13 +66,19 @@ struct SecuritySettings: View {
         }
 
         Section {
-            if SecurityCheck.findings.isEmpty {
+            if security.findings.isEmpty {
                 Label("No signs of a jailbreak, injected code or a broken sandbox", systemImage: "checkmark.shield")
                     .foregroundStyle(.green)
             } else {
-                ForEach(SecurityCheck.findings) { f in
+                ForEach(security.findings) { f in
                     Label(f.what, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
                 }
+            }
+            // Live: re-checked every 15 s while cellosig is open.
+            TimelineView(.periodic(from: .now, by: 5)) { _ in
+                Label("Checking live · last check \(security.lastChecked.formatted(.relative(presentation: .numeric)))",
+                      systemImage: "dot.radiowaves.left.and.right")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             switch SecurityCheck.appleLockdownMode {
             case true?: Label("iPhone Lockdown Mode is on", systemImage: "lock.shield.fill").foregroundStyle(.green)

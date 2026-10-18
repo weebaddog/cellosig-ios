@@ -10,6 +10,7 @@ struct ChatRoute: Hashable {
 struct ChatListView: View {
     @EnvironmentObject var m: Messenger
     @EnvironmentObject var model: AppModel
+    @ObservedObject private var security = SecurityMonitor.shared
     @State private var path: [ChatRoute] = []
     @State private var showNew = false
     @State private var showSettings = false
@@ -67,7 +68,7 @@ struct ChatListView: View {
 
     private func chatList(_ convs: [Conversation], _ requests: [Conversation]) -> some View {
         List {
-                if SecurityCheck.compromised {
+                if !security.findings.isEmpty {
                     Label("This iPhone shows signs its protections were broken — something may be able to read your messages. See Settings → Security check.",
                           systemImage: "exclamationmark.shield.fill")
                         .font(.footnote).foregroundStyle(.red)

@@ -164,6 +164,7 @@ final class AppModel: ObservableObject {
             messenger?.foregrounded()
             ExtensionBridge.shared.processInbox()
             ScreenShield.refresh()   // (the window may not have existed yet at launch)
+            SecurityMonitor.shared.resume()
             if let conv = chatOnScreen, let m = messenger, m.activeChat == nil {
                 m.activeChat = conv
                 Task { await m.markRead(conv) }
@@ -171,6 +172,7 @@ final class AppModel: ObservableObject {
             chatOnScreen = nil
         }
         if p == .background {
+            SecurityMonitor.shared.pause()
             // Still running (sideloaded keep-alive, or a call): nobody is looking, so
             // new messages in the open chat notify and stay unread.
             if let conv = messenger?.activeChat { chatOnScreen = conv; messenger?.activeChat = nil }
@@ -284,6 +286,7 @@ final class AppModel: ObservableObject {
 struct RootView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject private var calls = CallManager.shared
+    @ObservedObject private var security = SecurityMonitor.shared
     @AppStorage("theme", store: Shared.defaults) private var theme = "system"
     @AppStorage("accent", store: Shared.defaults) private var accent = "blue"
     @AppStorage("notify_preview", store: Shared.defaults) private var notifyPreview = false
@@ -320,6 +323,13 @@ struct RootView: View {
                 }
             }
         }
+        // The live security check found something new: say so at once.
+        .alert("Security warning", isPresented: Binding(get: { security.alert != nil }, set: { if !$0 { security.alert = nil } })) {
+            Button("OK", role: .cancel) { security.alert = nil }
+        } message: {
+            Text((security.alert ?? []).map(\.what).joined(separator: "\n") +
+                 "\n\nSomething on this iPhone may be able to read your messages. Don't send anything private until it's gone (Settings → Security check).")
+        }
         .alert("cellosig", isPresented: .constant(model.startupError != nil)) {
             Button("OK") { model.startupError = nil }
         } message: { Text(model.startupError ?? "") }
@@ -330,7 +340,7 @@ struct RootView: View {
         // The widget shows message previews only while they're allowed.
         .onChange(of: notifyPreview) { _ in ExtensionBridge.shared.writeSnapshots() }
         // Block screenshots (Settings → Security): needs the window, so not before it's on screen.
-        .task { ScreenShield.refresh() }
+        .task { ScreenShield.refresh(); SecurityMonitor.shared.resume() }
         .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in
             captured = UIScreen.main.isCaptured
         }

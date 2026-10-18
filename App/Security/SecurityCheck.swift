@@ -16,10 +16,10 @@ enum SecurityCheck {
         var what: String
     }
 
-    /// Run once per launch (cheap: a few file checks).
-    static let findings: [Finding] = run()
+    /// What the live check (SecurityMonitor) found most recently.
+    @MainActor static var findings: [Finding] { SecurityMonitor.shared.findings }
 
-    static var compromised: Bool { !findings.isEmpty }
+    @MainActor static var compromised: Bool { !findings.isEmpty }
 
     /// A store copy that was decrypted and re-packaged (a cracked copy): it refuses to open.
     static let repackaged: Bool = {
@@ -36,7 +36,8 @@ enum SecurityCheck {
         UserDefaults.standard.object(forKey: "LDMGlobalEnabled") as? Bool
     }
 
-    private static func run() -> [Finding] {
+    /// One full check (cheap: a few file checks, the loaded-code list, one local port probe).
+    static func scan() -> [Finding] {
         var out: [Finding] = []
         #if targetEnvironment(simulator)
         return out
@@ -95,7 +96,57 @@ enum SecurityCheck {
         return out
         #endif
     }
+}
 
+/// The security check, running live: again every 15 s while cellosig is on
+/// screen and each time you come back to it. Something new (a debugger
+/// attaching, Frida starting, a jailbreak tool appearing) raises an alert
+/// right away instead of waiting for you to look in Settings.
+@MainActor
+final class SecurityMonitor: ObservableObject {
+    static let shared = SecurityMonitor()
+
+    @Published private(set) var findings: [SecurityCheck.Finding] = SecurityCheck.scan()
+    /// Findings that appeared since the last look, to alert about (nil = nothing new).
+    @Published var alert: [SecurityCheck.Finding]?
+    @Published private(set) var lastChecked = Date()
+
+    private var timer: Timer?
+    private var scanning = false
+
+    /// cellosig is on screen: check now, then every 15 s.
+    func resume() {
+        refresh()
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
+            Task { @MainActor in SecurityMonitor.shared.refresh() }
+        }
+    }
+
+    /// Off screen: nobody to warn, so no checking.
+    func pause() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func refresh() {
+        guard !scanning else { return }
+        scanning = true
+        Task.detached(priority: .utility) {
+            let now = SecurityCheck.scan()
+            await MainActor.run {
+                let monitor = SecurityMonitor.shared
+                monitor.scanning = false
+                monitor.lastChecked = Date()
+                let new = now.filter { !monitor.findings.contains($0) }
+                if !new.isEmpty { monitor.alert = new }
+                if now != monitor.findings { monitor.findings = now }
+            }
+        }
+    }
+}
+
+extension SecurityCheck {
     /// Installed by the App Store or TestFlight (they leave a receipt; sideloaded copies don't).
     private static var fromAppleStore: Bool {
         guard Bundle.main.object(forInfoDictionaryKey: "CellosigKeepAlive") == nil,
