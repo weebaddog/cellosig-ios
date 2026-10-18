@@ -67,6 +67,12 @@ struct ChatListView: View {
 
     private func chatList(_ convs: [Conversation], _ requests: [Conversation]) -> some View {
         List {
+                if SecurityCheck.compromised {
+                    Label("This iPhone shows signs its protections were broken — something may be able to read your messages. See Settings → Security check.",
+                          systemImage: "exclamationmark.shield.fill")
+                        .font(.footnote).foregroundStyle(.red)
+                        .glassBanner()
+                }
                 if !m.connected {
                     Label("Connecting to relay…", systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.orange)
                         .glassBanner()
@@ -251,7 +257,8 @@ enum AvatarCache {
     private static let cache: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 200; return c }()
 
     static func image(_ m: Messenger, _ phone: String) -> UIImage? {
-        guard let path = m.profilePhotoPath(phone) else { return nil }
+        // Lockdown mode: pictures other people chose aren't even decoded.
+        guard !Lockdown.on, let path = m.profilePhotoPath(phone) else { return nil }
         let changed = ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let key = "\(path)#\(changed)" as NSString
         if let hit = cache.object(forKey: key) { return hit }

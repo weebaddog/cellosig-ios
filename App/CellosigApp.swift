@@ -263,6 +263,7 @@ struct RootView: View {
     @AppStorage("theme", store: Shared.defaults) private var theme = "system"
     @AppStorage("accent", store: Shared.defaults) private var accent = "blue"
     @AppStorage("notify_preview", store: Shared.defaults) private var notifyPreview = false
+    @State private var captured = UIScreen.main.isCaptured
 
     var body: some View {
         ZStack {
@@ -280,6 +281,16 @@ struct RootView: View {
                 Color(.systemBackground).ignoresSafeArea()
                 Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
             }
+            // The screen is being recorded, mirrored or AirPlayed: show nothing of your chats.
+            if captured && !model.obscured {
+                Color(.systemBackground).ignoresSafeArea()
+                VStack(spacing: 10) {
+                    Image(systemName: "record.circle").font(.largeTitle).foregroundStyle(.red)
+                    Text("Screen recording or mirroring is on").font(.headline)
+                    Text("cellosig is hidden while your screen is being recorded or shown on another display.")
+                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 40)
+                }
+            }
         }
         .alert("cellosig", isPresented: .constant(model.startupError != nil)) {
             Button("OK") { model.startupError = nil }
@@ -290,6 +301,9 @@ struct RootView: View {
         .onOpenURL { url in if let conv = AppLinks.conversation(from: url) { model.openConversation = conv } }
         // The widget shows message previews only while they're allowed.
         .onChange(of: notifyPreview) { _ in ExtensionBridge.shared.writeSnapshots() }
+        .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in
+            captured = UIScreen.main.isCaptured
+        }
     }
 }
 

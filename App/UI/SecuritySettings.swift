@@ -51,7 +51,32 @@ struct SecuritySettings: View {
             • pictures stay hidden until you tap them
             • only contacts whose safety number you verified can call you
             • no in-chat YouTube player
+            • other people's profile photos aren't shown
             • with a cellosig password set, Face ID can't unlock the app (password only)
+            """)
+        }
+
+        Section {
+            if SecurityCheck.findings.isEmpty {
+                Label("No signs of a jailbreak, injected code or a broken sandbox", systemImage: "checkmark.shield")
+                    .foregroundStyle(.green)
+            } else {
+                ForEach(SecurityCheck.findings) { f in
+                    Label(f.what, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                }
+            }
+            switch SecurityCheck.appleLockdownMode {
+            case true?: Label("iPhone Lockdown Mode is on", systemImage: "lock.shield.fill").foregroundStyle(.green)
+            case false?: Label("iPhone Lockdown Mode is off", systemImage: "lock.shield").foregroundStyle(.orange)
+            case nil: EmptyView()
+            }
+        } header: { Text("Security check") } footer: {
+            Text("""
+            This only catches crude tools. Spyware like Pegasus breaks into iOS itself and hides from apps, so a clean check can't prove the phone is safe — no app can. What really protects you:
+            • Apple's Lockdown Mode (Settings → Privacy & Security → Lockdown Mode)
+            • installing iOS updates right away
+            • restarting the iPhone every day or two
+            • if you're worried, a scan with Amnesty International's Mobile Verification Toolkit
             """)
         }
 
