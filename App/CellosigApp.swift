@@ -143,8 +143,20 @@ final class AppModel: ObservableObject {
     /// The chat that was open when the app went to the background.
     private var chatOnScreen: String?
 
+    private var lastPhase: ScenePhase = .active
+    /// Our own Face ID / passcode prompt is up (it makes the app "inactive" too).
+    private var authenticating = false
+
     func phaseChanged(_ p: ScenePhase) {
-        obscured = p != .active
+        // The privacy cover: up the moment you leave (so the app switcher never shows
+        // your chats), down the moment you come back — not only once the unlock
+        // animation has finished. Not for our own Face ID prompt (App lock covers that).
+        switch p {
+        case .active: obscured = false
+        case .inactive: obscured = lastPhase == .active && !authenticating
+        default: obscured = true
+        }
+        lastPhase = p
         if p == .active {
             KeepAlive.shared.enteredForeground()
             messenger?.foregrounded()
@@ -178,14 +190,21 @@ final class AppModel: ObservableObject {
         if AppPassword.isSet {
             guard biometricsAllowed, ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err) else { return }
             ctx.localizedFallbackTitle = ""   // the fallback is our password field, not the phone's passcode
-            if (try? await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock cellosig")) == true { locked = false }
+            if await evaluate(ctx, .deviceOwnerAuthenticationWithBiometrics, "Unlock cellosig") { locked = false }
             return
         }
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
             // The passcode was removed from the phone: nothing left to check against.
             locked = false; return
         }
-        if (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock cellosig")) == true { locked = false }
+        if await evaluate(ctx, .deviceOwnerAuthentication, "Unlock cellosig") { locked = false }
+    }
+
+    /// Face ID / passcode, marked as ours (so the privacy cover doesn't go up for it).
+    private func evaluate(_ ctx: LAContext, _ policy: LAPolicy, _ reason: String) async -> Bool {
+        authenticating = true
+        defer { authenticating = false }
+        return (try? await ctx.evaluatePolicy(policy, localizedReason: reason)) == true
     }
 
     /// Face ID may unlock the app (with a password set: unless Lockdown mode is on).
@@ -237,7 +256,7 @@ final class AppModel: ObservableObject {
         let ctx = LAContext()
         var err: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err),
-              (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Lock cellosig with Face ID or your passcode")) == true
+              await evaluate(ctx, .deviceOwnerAuthentication, "Lock cellosig with Face ID or your passcode")
         else { return false }
         lockEnabled = true
         return true
