@@ -1,5 +1,20 @@
 import SwiftUI
 
+/// The privacy policy, terms and support pages. A fixed web address when the
+/// build sets one (CellosigLegalBase, for the App Store); otherwise the relay
+/// serves them itself, wherever it currently is.
+enum Legal {
+    static func url(_ page: String) -> URL? {
+        if let base = Bundle.main.object(forInfoDictionaryKey: "CellosigLegalBase") as? String, !base.isEmpty {
+            return URL(string: base.hasSuffix("/") ? base + page : base + "/" + page)
+        }
+        guard let relay = Account.load()?.relayURL, var c = URLComponents(string: relay) else { return nil }
+        c.scheme = c.scheme == "ws" ? "http" : "https"
+        c.path = "/" + page
+        return c.url
+    }
+}
+
 /// Settings → About: exactly which build this is (the IPA's version, build
 /// number, when it was built and from which code), so you can tell copies apart.
 struct AboutSection: View {
@@ -32,6 +47,9 @@ struct AboutSection: View {
             if !Database.encrypted, let why = Database.notEncryptedReason {
                 Text(why).font(.caption).foregroundStyle(.secondary)
             }
+            if let p = Legal.url("privacy") { Link("Privacy policy", destination: p) }
+            if let t = Legal.url("terms") { Link("Terms of use", destination: t) }
+            if let s = Legal.url("support") { Link("Help & contact", destination: s) }
         } header: { Text("About") } footer: {
             Text("cellosig \(version) (\(build)). Tell this to whoever helps you with the app, so they know exactly which copy you have.")
         }

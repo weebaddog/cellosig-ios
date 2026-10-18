@@ -1192,6 +1192,30 @@ final class Messenger: ObservableObject {
         accessKeys.forget(phone)
     }
 
+    private struct ReportFrame: Encodable {
+        struct Shared: Encodable { var ts: Int64; var from: String; var text: String }
+        var type = "report"
+        var phone: String
+        var reason: String
+        var messages: [Shared]?
+    }
+
+    /// Report `phone` to the relay's operator. `share`: also send the last few messages
+    /// between you and them in `conv`, from your own copy (the relay can't read chats).
+    /// False if the relay isn't reachable right now.
+    func report(_ phone: String, in conv: String, reason: String, share: Bool) -> Bool {
+        let shared: [ReportFrame.Shared]? = share
+            ? messages(conv, limit: 300)
+                .filter { !$0.isSystem && !$0.deleted && ($0.outgoing || ($0.sender ?? conv) == phone) }
+                .suffix(10)
+                .map { msg in
+                    let file = msg.fileName.map { "[\($0)] " } ?? ""
+                    return .init(ts: msg.ts, from: msg.outgoing ? "reporter" : "them", text: file + msg.body)
+                }
+            : nil
+        return relay.send(ReportFrame(phone: phone, reason: reason, messages: shared))
+    }
+
     func unblock(_ phone: String) { try? db.run("DELETE FROM blocked WHERE phone = ?", phone); touch() }
     func isBlocked(_ phone: String) -> Bool { (try? db.scalarInt("SELECT 1 FROM blocked WHERE phone = ?", phone)) != nil }
     func blockedList() -> [String] { ((try? db.query("SELECT phone FROM blocked ORDER BY at DESC")) ?? []).compactMap { $0.str("phone") } }

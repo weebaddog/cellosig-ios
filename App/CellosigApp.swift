@@ -367,6 +367,10 @@ struct SetupView: View {
                             .glassButton(prominent: true).controlSize(.large)
                             .disabled(busy || number.isEmpty)
                             .listRowBackground(Glass26.on ? Color.clear : nil)
+                    } footer: {
+                        // Sending the code is agreeing: no abuse, see the terms (App Store rule for chat apps).
+                        let md = "By continuing you agree to the [Terms of use](\(legal("terms"))) — no harassment, threats, spam or illegal content; abusive accounts are removed — and the [Privacy policy](\(legal("privacy")))."
+                        Text((try? AttributedString(markdown: md)) ?? AttributedString(md))
                     }
                 } else {
                     Section("Code sent to \(PhoneNumbers.pretty(phone!))") {
@@ -381,6 +385,17 @@ struct SetupView: View {
             }
             .navigationTitle("cellosig")
         }
+    }
+
+    /// A legal page: the fixed web address if the build has one, else on the relay being signed up to.
+    private func legal(_ page: String) -> String {
+        if let base = Bundle.main.object(forInfoDictionaryKey: "CellosigLegalBase") as? String, !base.isEmpty {
+            return (base.hasSuffix("/") ? base : base + "/") + page
+        }
+        guard let u = relayURL, var c = URLComponents(url: u, resolvingAgainstBaseURL: false) else { return "https://cellosig.invalid/" + page }
+        c.scheme = c.scheme == "ws" ? "http" : "https"
+        c.path = "/" + page
+        return c.string ?? ""
     }
 
     private var relayURL: URL? {
@@ -427,6 +442,7 @@ struct SetupView: View {
         case "bad_code": return "That code isn't right (or it expired)."
         case "rate_limited": return "Too many attempts. Wait a few minutes and try again."
         case "sms_failed": return "The relay couldn't text that number."
+        case "banned": return "This number was removed from cellosig for breaking the rules against abuse."
         case "bad_phone": return "That phone number isn't valid."
         default: return "The relay said: \(reason)"
         }

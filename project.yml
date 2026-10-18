@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.4.3"
+    MARKETING_VERSION: "0.4.4"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -17,7 +17,7 @@ settings:
 packages:
   CellosigCore:
     path: Core
-  # Google's WebRTC, prebuilt (binary xcframework) â€” same engine the Android app uses.
+  # Google's WebRTC, prebuilt (binary xcframework) — same engine the Android app uses.
   WebRTC:
     url: https://github.com/stasel/WebRTC
     minVersion: 114.0.0
@@ -65,7 +65,7 @@ targets:
         NSContactsUsageDescription: Show your contacts' names and find which of them use cellosig. Only phone numbers are sent to the relay to check; names stay on your iPhone.
         NSSpeechRecognitionUsageDescription: Turn voice notes into text, on your iPhone only (nothing is sent to Apple).
         UIBackgroundModes: [remote-notification, voip, audio]
-        # cellosig://chat?id=â€¦ (the widget opens a chat with it)
+        # cellosig://chat?id=… (the widget opens a chat with it)
         CFBundleURLTypes:
           - CFBundleURLName: com.cellosig.links
             CFBundleURLSchemes: [cellosig]

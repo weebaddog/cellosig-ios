@@ -30,6 +30,7 @@ struct ChatView: View {
     @State private var remind: Message?
     @State private var error: String?
     @State private var share: URL?
+    @State private var reporting: ReportTarget?
     @StateObject private var recorder = VoiceRecorder()
     @ObservedObject private var calls = CallManager.shared
     @FocusState private var focused: Bool
@@ -67,7 +68,8 @@ struct ChatView: View {
                             MessageRow(msg: msg, conv: conv, share: $share, remind: $remind, reminders: reminders[msg.id] ?? [],
                                        reacts: reacts[msg.msgId] ?? [],
                                        highlighted: highlight == msg.id,
-                                       edit: { editText = $0.body; editing = $0 }, unsend: { unsending = $0 }).id(msg.id)
+                                       edit: { editText = $0.body; editing = $0 }, unsend: { unsending = $0 },
+                                       report: { reporting = ReportTarget(phone: $0.sender ?? conv) }).id(msg.id)
                                 .onAppear { if msg.id == msgs.last?.id { atBottom = true } }
                                 .onDisappear { if msg.id == msgs.last?.id { atBottom = false } }
                         }
@@ -173,6 +175,7 @@ struct ChatView: View {
                         }
                     }
                     if !isGroup {
+                        Button(role: .destructive) { reporting = ReportTarget(phone: conv) } label: { Label("Report", systemImage: "exclamationmark.bubble") }
                         Button(role: .destructive) { m.block(conv); dismiss() } label: { Label("Block", systemImage: "hand.raised") }
                     }
                     Button(role: .destructive) { confirmDelete = true } label: { Label("Delete chat", systemImage: "trash") }
@@ -183,6 +186,12 @@ struct ChatView: View {
     private func withSheets(_ v: some View) -> some View {
         v
         .sheet(isPresented: $showSafety) { SafetyNumberView(peer: conv) }
+        .sheet(item: $reporting) { t in
+            ReportSheet(phone: t.phone, conv: conv) { blocked in
+                // Blocking someone you have a 1:1 chat with removes that chat.
+                if blocked && t.phone == conv { dismiss() }
+            }
+        }
         .sheet(isPresented: $showEncryption) { NavigationStack { EncryptionInfo(conv: conv) } }
         .sheet(isPresented: $showPoll) { PollComposer(conv: conv) }
         .sheet(isPresented: $showStickers) {
@@ -445,6 +454,7 @@ struct MessageRow: View {
     var highlighted = false
     var edit: (Message) -> Void = { _ in }
     var unsend: (Message) -> Void = { _ in }
+    var report: (Message) -> Void = { _ in }
     /// Lockdown mode: this picture was tapped to show it.
     @State private var revealed = false
 
@@ -595,6 +605,10 @@ struct MessageRow: View {
         if m.canUnsend(msg) {
             Button(role: .destructive) { unsend(msg) } label: { Label("Delete for everyone", systemImage: "trash") }
         }
+        // In a group, the way to report one member: from something they sent.
+        if Messenger.isGroup(conv), !msg.outgoing, !msg.isSystem, msg.sender != nil {
+            Button(role: .destructive) { report(msg) } label: { Label("Report \(m.groupMemberName(msg.sender ?? ""))", systemImage: "exclamationmark.bubble") }
+        }
     }
 }
 
@@ -602,13 +616,17 @@ struct RequestBar: View {
     @EnvironmentObject var m: Messenger
     let conv: String
     let close: () -> Void
+    @State private var reporting = false
 
     var body: some View {
         VStack(spacing: 8) {
             Text("\(m.title(conv)) isn't in your chats. Accept to reply and let them know you've seen their messages.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             HStack {
-                if !Messenger.isGroup(conv) { Button("Block", role: .destructive) { m.block(conv); close() }.glassButton() }
+                if !Messenger.isGroup(conv) {
+                    Button("Report", role: .destructive) { reporting = true }.glassButton()
+                    Button("Block", role: .destructive) { m.block(conv); close() }.glassButton()
+                }
                 Button("Delete", role: .destructive) { m.deleteConversation(conv); close() }.glassButton()
                 Spacer()
                 Button("Accept") { Task { await m.acceptRequest(conv) } }.glassButton(prominent: true)
@@ -617,6 +635,9 @@ struct RequestBar: View {
         .padding()
         .liquidGlass(in: RoundedRectangle(cornerRadius: Glass26.on ? 24 : 0), fallback: .bar)
         .padding(Glass26.on ? 10 : 0)
+        .sheet(isPresented: $reporting) {
+            ReportSheet(phone: conv, conv: conv) { blocked in if blocked { close() } }
+        }
     }
 }
 
