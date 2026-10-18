@@ -106,6 +106,8 @@ final class AppModel: ObservableObject {
     }
 
     func start(_ account: Account) {
+        // A cracked (decrypted and re-packaged) copy never opens the keys or connects.
+        guard !SecurityCheck.repackaged else { return }
         do {
             let m = try Messenger(account: account)
             m.onIncoming = { [weak self] conv, sender, preview in self?.notify(conv: conv, sender: sender, preview: preview) }
@@ -289,7 +291,11 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            if let m = model.messenger {
+            if SecurityCheck.repackaged {
+                // A cracked copy: never shows chats (the account isn't even started; see AppModel).
+                Text("This copy of cellosig has been modified, so it won't open your messages.\n\nDelete it and install cellosig from the App Store.")
+                    .multilineTextAlignment(.center).padding(32)
+            } else if let m = model.messenger {
                 ChatListView().environmentObject(m)
                 if model.locked { LockView() }
                 // Above the lock: a call can be answered without unlocking (it shows only the caller, not your chats).

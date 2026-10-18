@@ -21,6 +21,15 @@ enum SecurityCheck {
 
     static var compromised: Bool { !findings.isEmpty }
 
+    /// A store copy that was decrypted and re-packaged (a cracked copy): it refuses to open.
+    static let repackaged: Bool = {
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        return fromAppleStore && !mainBinaryEncrypted()
+        #endif
+    }()
+
     /// Apple's Lockdown Mode (Settings → Privacy & Security). Read from a system
     /// setting apps can see; nil if this iOS doesn't say.
     static var appleLockdownMode: Bool? {
@@ -72,7 +81,64 @@ enum SecurityCheck {
         if sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, (info.kp_proc.p_flag & P_TRACED) != 0 {
             out.append(Finding(what: "A debugger is attached to cellosig"))
         }
+
+        // 5. A Frida instrumentation server on this phone (its default port).
+        if localPortOpen(27042) {
+            out.append(Finding(what: "A Frida instrumentation server is running on this iPhone"))
+        }
+
+        // 6. A copy from the App Store / TestFlight is encrypted by Apple. Cracked copies
+        // are made by decrypting it and re-packaging: then the encryption is gone.
+        if fromAppleStore && !mainBinaryEncrypted() {
+            out.append(Finding(what: "This copy of cellosig was decrypted and re-packaged (not the one Apple delivered)"))
+        }
         return out
         #endif
+    }
+
+    /// Installed by the App Store or TestFlight (they leave a receipt; sideloaded copies don't).
+    private static var fromAppleStore: Bool {
+        guard Bundle.main.object(forInfoDictionaryKey: "CellosigKeepAlive") == nil,
+              let r = Bundle.main.appStoreReceiptURL else { return false }
+        return FileManager.default.fileExists(atPath: r.path)
+    }
+
+    /// The app's own executable still carries Apple's FairPlay encryption (cryptid != 0).
+    private static func mainBinaryEncrypted() -> Bool {
+        guard let header = _dyld_get_image_header(0) else { return true }
+        var cmd = UnsafeRawPointer(header).advanced(by: MemoryLayout<mach_header_64>.size)
+        for _ in 0..<header.pointee.ncmds {
+            let lc = cmd.assumingMemoryBound(to: load_command.self).pointee
+            if lc.cmd == LC_ENCRYPTION_INFO_64 {
+                return cmd.assumingMemoryBound(to: encryption_info_command_64.self).pointee.cryptid != 0
+            }
+            cmd = cmd.advanced(by: Int(lc.cmdsize))
+        }
+        return true   // no encryption section to judge by: don't cry wolf
+    }
+
+    /// Something is listening on 127.0.0.1:`port`.
+    private static func localPortOpen(_ port: UInt16) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        // Non-blocking connect with a short wait, so a launch is never held up.
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        let r = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        if r == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pfd, 1, 100) == 1 else { return false }
+        var err: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
+        return err == 0
     }
 }
