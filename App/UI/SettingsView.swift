@@ -63,6 +63,13 @@ struct SettingsView: View {
                 } header: { Text("Your profile") } footer: {
                     Text("Sent end-to-end encrypted to people you message, so they see your name instead of a number.")
                 }
+                Section {
+                    NavigationLink { EncryptionInfo(showsDone: false) } label: {
+                        Label(Database.encrypted ? "Encryption overview" : "Encryption overview — database not encrypted",
+                              systemImage: Database.encrypted ? "lock.shield.fill" : "exclamationmark.shield")
+                            .foregroundStyle(Database.encrypted ? Color.primary : Color.orange)
+                    }
+                } footer: { Text("What's encrypted, what isn't, and what the relay can see.") }
                 Section("Privacy") {
                     Toggle("Send read receipts", isOn: Binding(get: { m.readReceipts }, set: { m.readReceipts = $0 }))
                     Toggle("Show sender and message in notifications", isOn: $notifyPreview)

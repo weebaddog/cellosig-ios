@@ -20,6 +20,7 @@ struct ChatView: View {
     @State private var confirmDelete = false
     @State private var editingPhoto: EditablePhoto?
     @State private var showPhotos = false
+    @State private var showEncryption = false
     @State private var draft = ""
     @State private var photo: PhotosPickerItem?
     @State private var showFiles = false
@@ -57,6 +58,8 @@ struct ChatView: View {
                         if total > msgs.count {
                             Button("Show earlier messages") { limit += 300 }
                                 .font(.footnote).glassButton().padding(.bottom, 4)
+                        } else {
+                            EncryptionBanner { showEncryption = true }   // the start of the conversation
                         }
                         let reminders = Dictionary(grouping: m.reminders(conv: conv), by: { $0.msgRow ?? -1 })
                         let reacts = m.reactions(conv: conv)
@@ -106,11 +109,21 @@ struct ChatView: View {
     @ToolbarContentBuilder
     private func toolbarItems(_ c: Conversation?) -> some ToolbarContent {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    Text(m.title(conv)).font(.headline).lineLimit(1)
-                    if !isGroup && m.hasProfileName(conv) { Text(PhoneNumbers.pretty(conv)).font(.caption2).foregroundStyle(.secondary) }
-                    else if isGroup { Text("\(m.recipients(conv).count + 1) members").font(.caption2).foregroundStyle(.secondary) }
+                // Tap the name for what's encrypted in this chat (and what isn't).
+                Button { showEncryption = true } label: {
+                    VStack(spacing: 0) {
+                        Text(m.title(conv)).font(.headline).lineLimit(1).foregroundStyle(.primary)
+                        HStack(spacing: 4) {
+                            Image(systemName: "lock.fill")
+                            if !isGroup && m.hasProfileName(conv) { Text(PhoneNumbers.pretty(conv)) }
+                            else if isGroup { Text("\(m.recipients(conv).count + 1) members") }
+                            else { Text("End-to-end encrypted") }
+                        }
+                        .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows what's encrypted in this chat")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if c?.request != true {
@@ -162,6 +175,7 @@ struct ChatView: View {
     private func withSheets(_ v: some View) -> some View {
         v
         .sheet(isPresented: $showSafety) { SafetyNumberView(peer: conv) }
+        .sheet(isPresented: $showEncryption) { NavigationStack { EncryptionInfo(conv: conv) } }
         .sheet(isPresented: $showPoll) { PollComposer(conv: conv) }
         .sheet(isPresented: $showStickers) {
             StickerPicker { png in send(data: png, name: "sticker.png", mime: "image/png", kind: "sticker") }
