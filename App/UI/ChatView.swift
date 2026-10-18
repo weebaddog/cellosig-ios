@@ -224,8 +224,8 @@ struct ChatView: View {
                 guard size <= Messenger.maxFileBytes else { error = "That video is too large (90 MB max)."; return }
                 guard let data = try? Data(contentsOf: picked.url) else { error = "Couldn't load that photo."; return }
                 let type = item.supportedContentTypes.first
-                // Photos open in the editor (which also strips their hidden location data);
-                // videos and animated GIFs go as they are.
+                // Photos open in the editor; videos and animated GIFs go straight out
+                // (all of them lose their hidden location, date and camera details when sent).
                 if let type, type.conforms(to: .image), !type.conforms(to: .gif),
                    let img = ImageDecode.still(data, maxPixels: 3000) {
                     editingPhoto = EditablePhoto(image: img)
@@ -360,6 +360,7 @@ struct ChatView: View {
         Task {
             do { try await m.sendFile(conv, data: data, name: name, mime: mime, caption: caption, kind: kind) }
             catch ChunkedAead.Failure.tooLarge { self.error = "That file is too large (90 MB max)." }
+            catch let e as MediaScrub.Failure { self.error = e.errorDescription }
             catch { self.error = "Couldn't prepare that file to send (is the iPhone's storage full?)." }
         }
     }

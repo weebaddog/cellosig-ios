@@ -29,6 +29,8 @@ struct EncryptionInfo: View {
                 row(shielded, "Screenshots",
                     shielded ? "Blocked: screenshots and screen recordings come out blank. (A camera pointed at the screen still works.)"
                              : "Allowed. Turn on Block screenshots for this chat (••• menu) or for all of cellosig (Settings → Security).")
+                row(true, "Hidden photo & video details",
+                    "Removed before sending: where it was taken (GPS), when, and which phone or camera took it.")
                 row(false, "Things you share out",
                     "A photo or file you save or share to another app leaves cellosig's protection.")
             } header: { Text("On this iPhone") }

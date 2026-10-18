@@ -317,7 +317,9 @@ final class Messenger: ObservableObject {
 
     /// Encrypt a file under a fresh key (CSv2), upload the ciphertext, then send the key end to end.
     /// `kind`: "sticker" (shown without a bubble) or "voice" (a voice note); nil for photos and files.
-    func sendFile(_ conv: String, data: Data, name: String, mime: String, caption: String = "", kind: String? = nil) async throws {
+    func sendFile(_ conv: String, data original: Data, name: String, mime: String, caption: String = "", kind: String? = nil) async throws {
+        // Photos and videos lose their hidden location, dates and camera details first.
+        let data = try await MediaScrub.clean(original, mime: mime)
         guard Int64(data.count) <= Self.maxFileBytes else { throw ChunkedAead.Failure.tooLarge(Self.maxFileBytes) }
         let key = Primitives.randomBytes(32)
         let path = Paths.attachments.appendingPathComponent(UUID().uuidString)
