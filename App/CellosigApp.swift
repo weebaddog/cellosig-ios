@@ -94,7 +94,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    static let defaultRelay = "wss://theoretical-grades-rising-louis.trycloudflare.com"
+    /// cellosig's relay, at its permanent address.
+    static let defaultRelay = "wss://relay.cellosig.com"
 
     init() {
         try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("share"))
@@ -108,6 +109,13 @@ final class AppModel: ObservableObject {
     func start(_ account: Account) {
         // A cracked (decrypted and re-packaged) copy never opens the keys or connects.
         guard !SecurityCheck.repackaged else { return }
+        var account = account
+        // Signed up while the relay only had temporary (quick-tunnel) addresses:
+        // move to the permanent one. Same relay, same account; nothing else changes.
+        if URL(string: account.relayURL)?.host?.hasSuffix(".trycloudflare.com") == true {
+            account.relayURL = Self.defaultRelay
+            try? account.save()
+        }
         do {
             let m = try Messenger(account: account)
             m.onIncoming = { [weak self] conv, sender, preview in self?.notify(conv: conv, sender: sender, preview: preview) }
@@ -352,6 +360,7 @@ struct RootView: View {
 struct SetupView: View {
     @EnvironmentObject var model: AppModel
     @State private var relay = AppModel.defaultRelay
+    @State private var customRelay = false
     @State private var country = "1"
     @State private var number = ""
     @State private var code = ""
@@ -374,9 +383,12 @@ struct SetupView: View {
                             TextField("Phone number", text: $number).keyboardType(.phonePad).textContentType(.telephoneNumber)
                         }
                     }
-                    Section("Relay") {
-                        TextField("wss://…", text: $relay)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).font(.footnote.monospaced())
+                    // cellosig's own relay unless you run your own (most people never see this).
+                    if customRelay {
+                        Section("Relay") {
+                            TextField("wss://…", text: $relay)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).font(.footnote.monospaced())
+                        }
                     }
                     Section {
                         Button(action: requestCode) { Text(busy ? "Sending code…" : "Send code").frame(maxWidth: .infinity) }
@@ -385,8 +397,13 @@ struct SetupView: View {
                             .listRowBackground(Glass26.on ? Color.clear : nil)
                     } footer: {
                         // Sending the code is agreeing: no abuse, see the terms (App Store rule for chat apps).
-                        let md = "By continuing you agree to the [Terms of use](\(legal("terms"))) — no harassment, threats, spam or illegal content; abusive accounts are removed — and the [Privacy policy](\(legal("privacy")))."
-                        Text((try? AttributedString(markdown: md)) ?? AttributedString(md))
+                        VStack(alignment: .leading, spacing: 8) {
+                            let md = "By continuing you agree to the [Terms of use](\(legal("terms"))) — no harassment, threats, spam or illegal content; abusive accounts are removed — and the [Privacy policy](\(legal("privacy")))."
+                            Text((try? AttributedString(markdown: md)) ?? AttributedString(md))
+                            if !customRelay {
+                                Button("Use a different relay") { customRelay = true }.font(.footnote)
+                            }
+                        }
                     }
                 } else {
                     Section("Code sent to \(PhoneNumbers.pretty(phone!))") {
