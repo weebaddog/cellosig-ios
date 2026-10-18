@@ -13,25 +13,27 @@ enum MediaScrub {
         var errorDescription: String? { "Couldn't remove the hidden information (location, date, camera) from this file, so it wasn't sent." }
     }
 
-    /// The cleaned file, or the file unchanged if it isn't a photo or video.
-    static func clean(_ data: Data, mime: String) async throws -> Data {
-        if mime.hasPrefix("image/") { return try image(data) }
-        if mime.hasPrefix("video/") { return try await video(data, mime: mime) }
-        return data
+    /// The cleaned file and its (possibly new) type; unchanged if it isn't a photo or video.
+    static func clean(_ data: Data, mime: String) async throws -> (data: Data, mime: String) {
+        // Vector images (SVG, PDF…) aren't pictures ImageIO can redraw; they go as files.
+        if mime.hasPrefix("image/"), !mime.contains("svg") { return try image(data) }
+        if mime.hasPrefix("video/") { return (try await video(data, mime: mime), mime) }
+        return (data, mime)
     }
 
     // MARK: - Photos
 
     /// Every frame is drawn into a new file of the same type; none of the old tags are copied.
-    static func image(_ data: Data) throws -> Data {
+    static func image(_ data: Data) throws -> (data: Data, mime: String) {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
               let type = CGImageSourceGetType(src),
               CGImageSourceGetCount(src) > 0 else { throw Failure.unreadable }
         let count = CGImageSourceGetCount(src)
         let out = NSMutableData()
-        // Some types can be read but not written (e.g. RAW): those become JPEG.
+        // Some types can be read but not written (WebP, RAW…): those become PNG (keeps transparency).
         let writable = (CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []).contains(type as String)
-        let outType = writable ? type : UTType.jpeg.identifier as CFString
+        let outType = writable ? type : UTType.png.identifier as CFString
+        let outMime = UTType(outType as String)?.preferredMIMEType ?? "image/png"
         guard let dest = CGImageDestinationCreateWithData(out, outType, writable ? count : 1, nil) else { throw Failure.unreadable }
         if let global = keptContainerProperties(src) { CGImageDestinationSetProperties(dest, global as CFDictionary) }
         for i in 0..<(writable ? count : 1) {
@@ -39,7 +41,7 @@ enum MediaScrub {
             CGImageDestinationAddImage(dest, frame, keptFrameProperties(src, i) as CFDictionary)
         }
         guard CGImageDestinationFinalize(dest) else { throw Failure.unreadable }
-        return out as Data
+        return (out as Data, outMime)
     }
 
     /// Orientation (or the photo shows sideways), quality, and animation timing — nothing else.

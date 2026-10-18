@@ -161,6 +161,7 @@ final class AppModel: ObservableObject {
             KeepAlive.shared.enteredForeground()
             messenger?.foregrounded()
             ExtensionBridge.shared.processInbox()
+            ScreenShield.refresh()   // (the window may not have existed yet at launch)
             if let conv = chatOnScreen, let m = messenger, m.activeChat == nil {
                 m.activeChat = conv
                 Task { await m.markRead(conv) }
