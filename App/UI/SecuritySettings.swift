@@ -59,7 +59,6 @@ struct SecuritySettings: View {
             • nothing downloads automatically
             • pictures stay hidden until you tap them
             • only contacts whose safety number you verified can call you
-            • no in-chat YouTube player
             • other people's profile photos aren't shown
             • with a cellosig password set, Face ID can't unlock the app (password only)
             """)

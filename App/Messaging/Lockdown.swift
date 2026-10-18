@@ -6,7 +6,6 @@ import Foundation
 ///  - nothing is downloaded automatically;
 ///  - pictures aren't decoded until you tap them;
 ///  - only contacts whose safety number you verified can call you;
-///  - no in-chat YouTube player (a web engine is a big attack surface);
 ///  - with a cellosig password set, Face ID can't unlock the app (nobody can
 ///    be forced to look at the phone).
 enum Lockdown {
