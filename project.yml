@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.4.4"
+    MARKETING_VERSION: "0.4.5"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -55,6 +55,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CellosigKeychainGroup: $(AppIdentifierPrefix)com.cellosig.shared
+        # Privacy policy / terms / support (fixed address for the App Store; see Legal in AboutSection.swift)
+        CellosigLegalBase: https://weebaddog.github.io/cellosig-site
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
