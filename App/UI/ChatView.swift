@@ -59,8 +59,10 @@ struct ChatView: View {
                                 .font(.footnote).glassButton().padding(.bottom, 4)
                         }
                         let reminders = Dictionary(grouping: m.reminders(conv: conv), by: { $0.msgRow ?? -1 })
+                        let reacts = m.reactions(conv: conv)
                         ForEach(msgs) { msg in
                             MessageRow(msg: msg, conv: conv, share: $share, remind: $remind, reminders: reminders[msg.id] ?? [],
+                                       reacts: reacts[msg.msgId] ?? [],
                                        highlighted: highlight == msg.id,
                                        edit: { editText = $0.body; editing = $0 }, unsend: { unsending = $0 }).id(msg.id)
                                 .onAppear { if msg.id == msgs.last?.id { atBottom = true } }
@@ -413,6 +415,8 @@ struct MessageRow: View {
     @Binding var share: URL?
     @Binding var remind: Message?
     let reminders: [Reminder]
+    /// This message's reactions (looked up for the whole chat at once).
+    var reacts: [(member: String, emoji: String)] = []
     var highlighted = false
     var edit: (Message) -> Void = { _ in }
     var unsend: (Message) -> Void = { _ in }
@@ -452,9 +456,8 @@ struct MessageRow: View {
                         .glassButton().controlSize(.mini)
                         .accessibilityHint("Cancels this reminder")
                     }
-                    let reactions = m.reactions(msg.msgId)
-                    if !reactions.isEmpty {
-                        Text(reactions.map(\.emoji).joined()).font(.caption)
+                    if !reacts.isEmpty {
+                        Text(reacts.map(\.emoji).joined()).font(.caption)
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .liquidGlass(in: Capsule(), fallback: Color(.secondarySystemBackground))
                     }
@@ -512,19 +515,7 @@ struct MessageRow: View {
                 }
                 .foregroundStyle(msg.outgoing ? Color.white : Color.accentColor)
             } else if msg.isImage {
-                let side: CGFloat = isSticker ? 140 : 240
-                let img = ImageDecode.forMessage(msg.id) { m.attachmentData(msg) }
-                if let img, img.images != nil {
-                    AnimatedImage(image: img).frame(width: side, height: isSticker ? side : 240 * img.size.height / max(img.size.width, 1))
-                        .clipShape(RoundedRectangle(cornerRadius: isSticker ? 0 : 10))
-                        .onTapGesture { share = m.exportAttachment(msg) }
-                } else if let img {
-                    Image(uiImage: img).resizable().scaledToFit().frame(maxWidth: side, maxHeight: isSticker ? side : 320)
-                        .clipShape(RoundedRectangle(cornerRadius: isSticker ? 0 : 10))
-                        .onTapGesture { share = m.exportAttachment(msg) }
-                } else {
-                    Label("Picture can't be shown", systemImage: "photo").font(.caption)
-                }
+                MessageImage(msg: msg, sticker: isSticker) { share = m.exportAttachment(msg) }
             } else {
                 Button { share = m.exportAttachment(msg) } label: {
                     Label("\(msg.fileName ?? "File") · \(ByteCountFormatter.string(fromByteCount: msg.fileSize ?? 0, countStyle: .file))", systemImage: "doc")
@@ -564,7 +555,7 @@ struct MessageRow: View {
         ForEach(["👍", "❤️", "😂", "😮", "😢", "🙏"], id: \.self) { e in
             Button(e) { Task { await m.react(conv, msgId: msg.msgId, emoji: e) } }
         }
-        if m.reactions(msg.msgId).contains(where: { $0.member == m.me }) {
+        if reacts.contains(where: { $0.member == m.me }) {
             Button("Remove reaction") { Task { await m.react(conv, msgId: msg.msgId, emoji: nil) } }
         }
         if !msg.body.isEmpty {

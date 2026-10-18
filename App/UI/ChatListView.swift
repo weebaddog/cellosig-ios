@@ -222,7 +222,7 @@ struct Avatar: View {
 
     var body: some View {
         Group {
-            if !Messenger.isGroup(conv), let d = m.profilePhoto(conv), let img = UIImage(data: d) {
+            if !Messenger.isGroup(conv), let img = AvatarCache.image(m, conv) {
                 Image(uiImage: img).resizable().scaledToFill()
             } else {
                 ZStack {
@@ -240,6 +240,24 @@ struct Avatar: View {
         let name = m.title(conv)
         guard m.hasProfileName(conv) else { return "#" }
         return String(name.split(separator: " ").prefix(2).compactMap(\.first)).uppercased()
+    }
+}
+
+/// Profile pictures, decoded once at avatar size (they used to be re-read and
+/// re-decoded at full size on every redraw of every row). A new photo from
+/// that person changes the file's date, which makes a new cache entry.
+@MainActor
+enum AvatarCache {
+    private static let cache: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 200; return c }()
+
+    static func image(_ m: Messenger, _ phone: String) -> UIImage? {
+        guard let path = m.profilePhotoPath(phone) else { return nil }
+        let changed = ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "\(path)#\(changed)" as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        guard let d = try? Data(contentsOf: URL(fileURLWithPath: path)), let img = ImageDecode.still(d, maxPixels: 300) else { return nil }
+        cache.setObject(img, forKey: key)
+        return img
     }
 }
 

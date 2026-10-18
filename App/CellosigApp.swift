@@ -118,7 +118,8 @@ final class AppModel: ObservableObject {
             ExtensionBridge.shared.attach(m)
             ContactBook.shared.loadNames(m)
             CallManager.shared.registerForVoIP()
-            KeepAlive.shared.start()
+            // After the first screen is up: starting audio isn't needed to draw it.
+            Task { @MainActor in KeepAlive.shared.start() }
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
                 if granted { Task { @MainActor in UIApplication.shared.registerForRemoteNotifications() } }
             }

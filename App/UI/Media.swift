@@ -1,4 +1,5 @@
 import AVFoundation
+import CellosigCore
 import ImageIO
 import PhotosUI
 import Speech
@@ -14,10 +15,18 @@ enum ImageDecode {
     private static let maxFrames = 50
     private static let cache: NSCache<NSNumber, UIImage> = { let c = NSCache<NSNumber, UIImage>(); c.countLimit = 60; return c }()
 
-    /// A chat picture, decrypted and decoded once (chats redraw often).
-    static func forMessage(_ row: Int64, _ load: () -> Data?) -> UIImage? {
-        if let hit = cache.object(forKey: NSNumber(value: row)) { return hit }
-        guard let data = load(), let img = animated(data) ?? still(data) else { return nil }
+    /// Chat pictures show about 240 pt wide: decode at most this big (smaller = faster, less memory).
+    static let displayPixels = 1000
+
+    /// A chat picture already decoded (chats redraw often).
+    static func cached(_ row: Int64) -> UIImage? { cache.object(forKey: NSNumber(value: row)) }
+
+    /// Decrypt + decode a chat picture. Meant to run OFF the main thread (see MessageImage).
+    static func load(row: Int64, path: String, key: String) -> UIImage? {
+        if let hit = cached(row) { return hit }
+        guard let blob = try? Data(contentsOf: URL(fileURLWithPath: path)), let k = try? Primitives.unb64(key),
+              let data = try? ChunkedAead.decrypt(blob, key: k),
+              let img = animated(data) ?? still(data, maxPixels: displayPixels) else { return nil }
         cache.setObject(img, forKey: NSNumber(value: row))
         return img
     }
@@ -70,6 +79,51 @@ enum ImageDecode {
                     kCGImagePropertyWebPUnclampedDelayTime, kCGImagePropertyWebPDelayTime]
         let d = dicts.lazy.compactMap { dict in keys.lazy.compactMap { dict[$0] as? Double }.first }.first ?? 0.1
         return min(max(d, 0.02), 10)   // a crafted delay can't freeze the animation for hours
+    }
+}
+
+/// A chat picture, decrypted and decoded in the background: scrolling never
+/// waits for it (it used to happen on the main thread, in the middle of drawing).
+struct MessageImage: View {
+    let msg: Message
+    let sticker: Bool
+    let tap: () -> Void
+    @State private var img: UIImage?
+    @State private var failed = false
+
+    init(msg: Message, sticker: Bool, tap: @escaping () -> Void) {
+        self.msg = msg
+        self.sticker = sticker
+        self.tap = tap
+        _img = State(initialValue: ImageDecode.cached(msg.id))   // already decoded: no placeholder flash
+    }
+
+    var body: some View {
+        let side: CGFloat = sticker ? 140 : 240
+        Group {
+            if let img, img.images != nil {
+                AnimatedImage(image: img).frame(width: side, height: sticker ? side : 240 * img.size.height / max(img.size.width, 1))
+                    .clipShape(RoundedRectangle(cornerRadius: sticker ? 0 : 10))
+                    .onTapGesture(perform: tap)
+            } else if let img {
+                Image(uiImage: img).resizable().scaledToFit().frame(maxWidth: side, maxHeight: sticker ? side : 320)
+                    .clipShape(RoundedRectangle(cornerRadius: sticker ? 0 : 10))
+                    .onTapGesture(perform: tap)
+            } else if failed {
+                Label("Picture can't be shown", systemImage: "photo").font(.caption)
+            } else {
+                RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.15))
+                    .frame(width: side, height: sticker ? side : 180)
+                    .overlay(ProgressView())
+            }
+        }
+        .task(id: msg.id) {
+            guard img == nil else { return }
+            guard let path = msg.filePath, let key = msg.fileKey, (msg.fileSize ?? 0) <= 30 * 1024 * 1024 else { failed = true; return }
+            let row = msg.id
+            let out = await Task.detached(priority: .userInitiated) { ImageDecode.load(row: row, path: path, key: key) }.value
+            if let out { img = out } else { failed = true }
+        }
     }
 }
 

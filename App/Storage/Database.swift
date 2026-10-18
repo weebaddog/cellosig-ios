@@ -14,6 +14,9 @@ final class Database {
         guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK else { throw DBError.open }
         sqlite3_busy_timeout(db, 5000)  // the notification extension may be writing at the same moment
         try exec("PRAGMA journal_mode=WAL")
+        // With WAL this is still crash-safe (a power cut can lose at most the last
+        // moments, never corrupt the file), and writes no longer wait on a disk flush each.
+        try exec("PRAGMA synchronous=NORMAL")
         try exec("PRAGMA foreign_keys=ON")
         try migrate()
     }

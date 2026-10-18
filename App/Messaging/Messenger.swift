@@ -1199,8 +1199,23 @@ final class Messenger: ObservableObject {
     }
 
     func profilePhoto(_ phone: String) -> Data? {
-        guard let p = try? db.query("SELECT photo FROM profiles WHERE phone = ?", phone).first?.str("photo") else { return nil }
+        guard let p = profilePhotoPath(phone) else { return nil }
         return try? Data(contentsOf: URL(fileURLWithPath: p))
+    }
+
+    func profilePhotoPath(_ phone: String) -> String? {
+        try? db.query("SELECT photo FROM profiles WHERE phone = ?", phone).first?.str("photo")
+    }
+
+    /// Reactions for every message in a chat at once (one query, not one per message).
+    func reactions(conv: String) -> [String: [(member: String, emoji: String)]] {
+        var out: [String: [(member: String, emoji: String)]] = [:]
+        let rows = (try? db.query("""
+            SELECT r.msgId, r.member, r.emoji FROM reactions r JOIN messages m ON m.msgId = r.msgId
+            WHERE m.conv = ? ORDER BY r.ts
+            """, conv)) ?? []
+        for r in rows { out[r.str("msgId") ?? "", default: []].append((r.str("member") ?? "", r.str("emoji") ?? "")) }
+        return out
     }
 
     func safetyNumber(_ peer: String) -> String? {
