@@ -81,6 +81,16 @@ struct SecuritySettings: View {
         }
 
         Section {
+            Label("Orange dot at the top = an app is using the microphone", systemImage: "circle.fill").foregroundStyle(.orange)
+            Label("Green dot = an app is using the camera", systemImage: "circle.fill").foregroundStyle(.green)
+        } header: { Text("Microphone & camera") } footer: {
+            Text("""
+            iOS shows these dots for every app, and apps can't hide them. While a dot is showing, swipe down Control Center to see which app it is. Settings → Privacy & Security → App Privacy Report lists which apps used the microphone and camera over the last week.
+            cellosig uses the microphone only during calls and while you record a voice note, and never uses the camera. (iOS doesn't let apps see what other apps are doing, so cellosig can't watch for that itself.)
+            """)
+        }
+
+        Section {
             Button("Erase everything on this iPhone", role: .destructive) { confirmErase = true }
         } header: { Text("Emergency") } footer: {
             Text("Erases cellosig's keys, messages, files and settings from this iPhone at once. Your account on the relay stays; signing up again with your number starts fresh.")
