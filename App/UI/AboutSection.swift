@@ -28,6 +28,10 @@ struct AboutSection: View {
             if let commit {
                 LabeledContent("Code", value: commit).font(.system(.body, design: .monospaced))
             }
+            LabeledContent("Message database", value: Database.encrypted ? "Encrypted (SQLCipher)" : "Not encrypted")
+            if !Database.encrypted, let why = Database.notEncryptedReason {
+                Text(why).font(.caption).foregroundStyle(.secondary)
+            }
         } header: { Text("About") } footer: {
             Text("cellosig \(version) (\(build)). Tell this to whoever helps you with the app, so they know exactly which copy you have.")
         }

@@ -1,17 +1,45 @@
+import CellosigCore
 import Foundation
-import SQLite3
+import SQLCipher
 
-/// Message storage: plain SQLite (system library, no dependencies) in the
-/// App Group container, protected by iOS Data Protection (unreadable until
-/// the phone is unlocked once after boot) and excluded from backups.
-/// Keys and sessions are separately vault-sealed (see Vault).
+/// Message storage: SQLite ENCRYPTED with SQLCipher (AES-256; the same engine
+/// as the Android client) under a random key that only exists sealed by the
+/// Vault — whose own key never leaves this iPhone's Keychain. On top of that,
+/// iOS Data Protection and no backups. A database from an older build (plain
+/// SQLite) is converted on first launch, and only replaced once the encrypted
+/// copy is verified complete; if anything goes wrong the old one stays in use
+/// (Settings → About says which).
 final class Database {
     private var db: OpaquePointer?
     private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+    /// Whether the open database is encrypted (shown in Settings → About), and why not.
+    private(set) static var encrypted = false
+    private(set) static var notEncryptedReason: String?
+
     init(url: URL = Paths.database) throws {
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_FILEPROTECTION_COMPLETEUNTILFIRSTUSERAUTHENTICATION
+        let key = try DatabaseKey.load()
+        // An older build's plain database: convert it (or, if that fails, keep using it as it is).
+        var stillPlain = false
+        do { stillPlain = try Self.encryptIfPlain(url, key) }
+        catch { stillPlain = true; Self.notEncryptedReason = "conversion failed (\(error))" }
+
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK else { throw DBError.open }
+        if !stillPlain {
+            try Self.applyKey(db, key)
+            if (try? scalarInt("SELECT count(*) FROM sqlite_master")) == nil {
+                // The key doesn't open it (the Vault's own key was lost, e.g. restored to
+                // another phone): nothing in it can be read again. Set it aside, start fresh.
+                sqlite3_close(db); db = nil
+                try? FileManager.default.moveItem(atPath: url.path, toPath: url.path + ".unreadable-\(Int(Date().timeIntervalSince1970))")
+                for s in ["-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + s) }
+                guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK else { throw DBError.open }
+                try Self.applyKey(db, key)
+            }
+        }
+        Self.encrypted = !stillPlain
+        Self.protect(url)
         sqlite3_busy_timeout(db, 5000)  // the notification extension may be writing at the same moment
         try exec("PRAGMA journal_mode=WAL")
         // With WAL this is still crash-safe (a power cut can lose at most the last
@@ -23,7 +51,80 @@ final class Database {
 
     deinit { sqlite3_close(db) }
 
-    enum DBError: Error { case open, prepare(String), step(String) }
+    enum DBError: Error { case open, prepare(String), step(String), verify(String) }
+
+    // MARK: Encryption
+
+    /// Raw key + salt (`x'<64 hex key><32 hex salt>'`): no passphrase stretching
+    /// needed (it's random), and an explicit salt lets the first 32 bytes stay a
+    /// plain SQLite header, which iOS needs to see to keep a database shared
+    /// with an extension from being treated as a held lock (0xdead10cc).
+    private static func applyKey(_ db: OpaquePointer?, _ keyHex: String) throws {
+        for sql in ["PRAGMA key = \"x'\(keyHex)'\"", "PRAGMA cipher_plaintext_header_size = 32"] {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw DBError.step("key") }
+        }
+    }
+
+    /// Convert an older build's plain database. Returns true if a plain one is still in use.
+    /// The plain file is replaced only after the encrypted copy is checked to hold every row.
+    private static func encryptIfPlain(_ url: URL, _ keyHex: String) throws -> Bool {
+        let fm = FileManager.default
+        guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber, size.intValue > 0 else { return false }
+        var plain: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &plain, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { sqlite3_close(plain); return false }
+        var closed = false
+        defer { if !closed { sqlite3_close(plain) } }
+        // Readable without any key = still plain; otherwise it's already encrypted.
+        guard isPlainReadable(plain) else { return false }
+
+        func run(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            if sqlite3_exec(plain, sql, nil, nil, &err) != SQLITE_OK {
+                let msg = err.map { String(cString: $0) } ?? "?"
+                sqlite3_free(err)
+                throw DBError.step(msg)
+            }
+        }
+        func count(_ sql: String) -> Int64 {
+            var st: OpaquePointer?
+            defer { sqlite3_finalize(st) }
+            guard sqlite3_prepare_v2(plain, sql, -1, &st, nil) == SQLITE_OK, sqlite3_step(st) == SQLITE_ROW else { return -1 }
+            return sqlite3_column_int64(st, 0)
+        }
+
+        let tmp = url.path + ".encrypting"
+        for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: tmp + s) }
+        let version = count("PRAGMA user_version")
+        let tables = ["messages", "conversations", "profiles", "reactions", "groups"]
+        let before = tables.map { count("SELECT COUNT(*) FROM \($0)") }
+        try run("ATTACH DATABASE '\(tmp)' AS enc KEY \"x'\(keyHex)'\"")
+        try run("PRAGMA enc.cipher_plaintext_header_size = 32")
+        try run("SELECT sqlcipher_export('enc')")
+        try run("PRAGMA enc.user_version = \(version)")
+        let after = tables.map { count("SELECT COUNT(*) FROM enc.\($0)") }
+        try run("DETACH DATABASE enc")
+        guard before == after else {
+            try? fm.removeItem(atPath: tmp)
+            throw DBError.verify("row counts differ \(before) → \(after)")
+        }
+        sqlite3_close(plain); closed = true
+        for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: url.path + s) }
+        try fm.moveItem(atPath: tmp, toPath: url.path)
+        return false
+    }
+
+    /// Opens and answers without a key: a plain (unencrypted) SQLite file.
+    private static func isPlainReadable(_ db: OpaquePointer?) -> Bool {
+        sqlite3_exec(db, "SELECT count(*) FROM sqlite_master", nil, nil, nil) == SQLITE_OK
+    }
+
+    /// iOS Data Protection on the files too (unreadable until the phone's first unlock after a restart).
+    private static func protect(_ url: URL) {
+        for s in ["", "-wal", "-shm"] where FileManager.default.fileExists(atPath: url.path + s) {
+            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                                   ofItemAtPath: url.path + s)
+        }
+    }
 
     // MARK: Schema
     private func migrate() throws {
@@ -149,6 +250,24 @@ final class Database {
     }
 
     func close() { sqlite3_close(db); db = nil }
+}
+
+/// The database's encryption key: 32 random bytes of key + 16 of salt, kept
+/// only sealed by the Vault (whose key never leaves this iPhone's Keychain).
+enum DatabaseKey {
+    private static var file: URL { Paths.keys.appendingPathComponent("database.key") }
+
+    /// As hex for SQLCipher's raw-key form. Made once; a key that can't be saved
+    /// is never used (the database would be unreadable after a restart).
+    static func load() throws -> String {
+        if let d = Vault.shared.readSealed(file), d.count == 48 { return hex(d) }
+        let fresh = Primitives.randomBytes(48)
+        try Vault.shared.writeSealed(file, fresh)
+        guard Vault.shared.readSealed(file) == fresh else { throw Database.DBError.verify("database key didn't save") }
+        return hex(fresh)
+    }
+
+    private static func hex(_ d: Data) -> String { d.map { String(format: "%02X", $0) }.joined() }
 }
 
 struct Row {

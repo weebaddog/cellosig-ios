@@ -22,6 +22,10 @@ packages:
     url: https://github.com/stasel/WebRTC
     minVersion: 114.0.0
     maxVersion: 200.0.0
+  # The message database is encrypted with SQLCipher (same as the Android client).
+  SQLCipher:
+    url: https://github.com/sqlcipher/SQLCipher.swift
+    from: 4.10.0
 targets:
   Cellosig:
     type: application
@@ -32,6 +36,7 @@ targets:
     dependencies:
       - package: CellosigCore
       - package: WebRTC
+      - package: SQLCipher
       - target: CellosigNotify
       - target: CellosigShare
       - target: CellosigWidget
@@ -83,6 +88,7 @@ targets:
       - path: App/Messaging
     dependencies:
       - package: CellosigCore
+      - package: SQLCipher
     entitlements:
       path: Notify/CellosigNotify.entitlements
       properties:

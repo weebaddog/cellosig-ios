@@ -255,7 +255,7 @@ enum AvatarCache {
         let changed = ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let key = "\(path)#\(changed)" as NSString
         if let hit = cache.object(forKey: key) { return hit }
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: path)), let img = ImageDecode.still(d, maxPixels: 300) else { return nil }
+        guard let d = m.profilePhoto(phone), let img = ImageDecode.still(d, maxPixels: 300) else { return nil }
         cache.setObject(img, forKey: key)
         return img
     }

@@ -374,8 +374,11 @@ enum MyStickers {
 
     static func add(_ data: Data) -> Bool {
         guard let img = ImageDecode.still(data, maxPixels: 512), let png = img.pngData() else { return false }
-        return (try? png.write(to: dir.appendingPathComponent(UUID().uuidString + ".png"), options: [.atomic, .completeFileProtection])) != nil
+        return (try? Vault.shared.writeSealed(dir.appendingPathComponent(UUID().uuidString + ".png"), png)) != nil
     }
+
+    /// The sticker's PNG (sealed on disk; ones from older builds are sealed on first read).
+    static func data(_ url: URL) -> Data? { Vault.shared.readMigrating(url) }
 
     static func remove(_ url: URL) { try? FileManager.default.removeItem(at: url) }
 }
@@ -410,10 +413,10 @@ struct StickerPicker: View {
                         }
                         ForEach(mine, id: \.self) { url in
                             Button {
-                                if let d = try? Data(contentsOf: url) { pick(d) }
+                                if let d = MyStickers.data(url) { pick(d) }
                                 dismiss()
                             } label: {
-                                if let img = UIImage(contentsOfFile: url.path) {
+                                if let img = MyStickers.data(url).flatMap(UIImage.init(data:)) {
                                     Image(uiImage: img).resizable().scaledToFit().frame(width: 72, height: 72)
                                 }
                             }

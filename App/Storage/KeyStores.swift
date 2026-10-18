@@ -201,8 +201,9 @@ final class OwnProfile {
     private var setFile: URL { dir.appendingPathComponent("set") }
     private var sentFile: URL { dir.appendingPathComponent("sent.txt") }
 
-    var name: String? { Profiles.cleanName(try? String(contentsOf: nameFile, encoding: .utf8)) }
-    var photo: Data? { (try? Data(contentsOf: photoFile)).flatMap { $0.isEmpty ? nil : $0 } }
+    // (All sealed by the Vault; files from older builds are sealed on first read.)
+    var name: String? { Profiles.cleanName(Vault.shared.readMigrating(nameFile).map { String(decoding: $0, as: UTF8.self) }) }
+    var photo: Data? { Vault.shared.readMigrating(photoFile) }
 
     var dto: ProfileDto? {
         guard FileManager.default.fileExists(atPath: setFile.path) else { return nil }
@@ -211,23 +212,25 @@ final class OwnProfile {
 
     func set(name: String?, photo: Data?, removePhoto: Bool) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let clean = Profiles.cleanName(name) { try clean.write(to: nameFile, atomically: true, encoding: .utf8) }
+        if let clean = Profiles.cleanName(name) { try Vault.shared.writeSealed(nameFile, Data(clean.utf8)) }
         else { try? FileManager.default.removeItem(at: nameFile) }
         if removePhoto { try? FileManager.default.removeItem(at: photoFile) }
         else if let photo {
             guard photo.count <= Profiles.maxPhotoBytes, Profiles.looksLikeImage(photo) else { throw CocoaError(.fileWriteInvalidFileName) }
-            try photo.write(to: photoFile, options: .atomic)
+            try Vault.shared.writeSealed(photoFile, photo)
         }
         try Data("1".utf8).write(to: setFile)
         try? FileManager.default.removeItem(at: sentFile)
     }
 
+    /// Who already has your current profile (phone numbers: sealed too).
+    private var sentList: String { Vault.shared.readMigrating(sentFile).map { String(decoding: $0, as: UTF8.self) } ?? "" }
+
     func alreadySent(to peer: String) -> Bool {
-        ((try? String(contentsOf: sentFile, encoding: .utf8)) ?? "").split(separator: "\n").contains { $0 == peer }
+        sentList.split(separator: "\n").contains { $0 == peer }
     }
 
     func markSent(to peer: String) {
-        let prev = (try? String(contentsOf: sentFile, encoding: .utf8)) ?? ""
-        try? (prev + peer + "\n").write(to: sentFile, atomically: true, encoding: .utf8)
+        try? Vault.shared.writeSealed(sentFile, Data((sentList + peer + "\n").utf8))
     }
 }

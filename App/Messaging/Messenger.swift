@@ -953,7 +953,7 @@ final class Messenger: ObservableObject {
         var photoPath: String?
         let file = Paths.profiles.appendingPathComponent(Primitives.sha256Hex(from) + ".img")
         if let b64 = pr.photo, let d = try? Primitives.unb64(b64), d.count <= Profiles.maxPhotoBytes, Profiles.looksLikeImage(d) {
-            try? d.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try? Vault.shared.writeSealed(file, d)   // sealed like the keys: not readable off the phone
             photoPath = file.path
         } else { try? FileManager.default.removeItem(at: file) }
         try? db.run("INSERT OR REPLACE INTO profiles(phone, name, photo) VALUES(?, ?, ?)", from, name, photoPath)
@@ -1200,7 +1200,7 @@ final class Messenger: ObservableObject {
 
     func profilePhoto(_ phone: String) -> Data? {
         guard let p = profilePhotoPath(phone) else { return nil }
-        return try? Data(contentsOf: URL(fileURLWithPath: p))
+        return Vault.shared.readMigrating(URL(fileURLWithPath: p))
     }
 
     func profilePhotoPath(_ phone: String) -> String? {

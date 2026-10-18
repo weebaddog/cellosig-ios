@@ -176,14 +176,14 @@ enum WallpaperPhoto {
 
     static func image(version: Int) -> UIImage? {
         if let c = cached, c.version == version { return c.image }
-        guard let d = try? Data(contentsOf: url), let img = UIImage(data: d) else { return nil }
+        guard let d = Vault.shared.readMigrating(url), let img = UIImage(data: d) else { return nil }
         cached = (version, img)
         return img
     }
 
     static func save(_ data: Data) -> Bool {
         guard let img = ImageDecode.still(data, maxPixels: 2048), let jpeg = img.jpegData(compressionQuality: 0.85) else { return false }
-        return (try? jpeg.write(to: url, options: [.atomic, .completeFileProtection])) != nil
+        return (try? Vault.shared.writeSealed(url, jpeg)) != nil
     }
 
     static func remove() { try? FileManager.default.removeItem(at: url); cached = nil }

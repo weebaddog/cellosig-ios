@@ -36,6 +36,15 @@ final class Vault {
         return try? open(raw)
     }
 
+    /// For files older builds wrote unsealed (profile photos, wallpaper, stickers):
+    /// read it either way, and seal a plain one in place so it's never plain again.
+    func readMigrating(_ url: URL) -> Data? {
+        guard let raw = try? Data(contentsOf: url), !raw.isEmpty else { return nil }
+        if let plain = try? open(raw) { return plain }
+        try? writeSealed(url, raw)
+        return raw
+    }
+
     /// Crypto-erase: without the key every sealed file is noise.
     func destroyKey() {
         SecItemDelete(baseQuery(shared: true) as CFDictionary)
