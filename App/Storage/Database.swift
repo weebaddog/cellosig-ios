@@ -22,11 +22,19 @@ final class Database {
         // An older build's plain database: convert it (or, if that fails, keep using it as it is).
         var stillPlain = false
         do { stillPlain = try Self.encryptIfPlain(url, key) }
-        catch { stillPlain = true; Self.notEncryptedReason = "conversion failed (\(error))" }
+        catch { stillPlain = true; Self.notEncryptedReason = "conversion failed: " + Self.describe(error) }
+        try open(url, key: stillPlain ? nil : key)
+    }
 
+    /// A database at `url` opened with `key` (nil: an old plain one kept in use), schema up to date.
+    private init(opening url: URL, key: String) throws {
+        try open(url, key: key)
+    }
+
+    private func open(_ url: URL, key: String?) throws {
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK else { throw DBError.open }
-        if !stillPlain {
+        if let key {
             try Self.applyKey(db, key)
             if (try? scalarInt("SELECT count(*) FROM sqlite_master")) == nil {
                 // The key doesn't open it (the Vault's own key was lost, e.g. restored to
@@ -38,7 +46,7 @@ final class Database {
                 try Self.applyKey(db, key)
             }
         }
-        Self.encrypted = !stillPlain
+        Self.encrypted = key != nil
         Self.protect(url)
         sqlite3_busy_timeout(db, 5000)  // the notification extension may be writing at the same moment
         try exec("PRAGMA journal_mode=WAL")
@@ -53,63 +61,82 @@ final class Database {
 
     enum DBError: Error { case open, prepare(String), step(String), verify(String) }
 
-    // MARK: Encryption
-
-    /// Raw key + salt (`x'<64 hex key><32 hex salt>'`): no passphrase stretching
-    /// needed (it's random), and an explicit salt lets the first 32 bytes stay a
-    /// plain SQLite header, which iOS needs to see to keep a database shared
-    /// with an extension from being treated as a held lock (0xdead10cc).
-    private static func applyKey(_ db: OpaquePointer?, _ keyHex: String) throws {
-        for sql in ["PRAGMA key = \"x'\(keyHex)'\"", "PRAGMA cipher_plaintext_header_size = 32"] {
-            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw DBError.step("key") }
+    private static func describe(_ error: Error) -> String {
+        switch error as? DBError {
+        case .open?: return "couldn't open the database file"
+        case .prepare(let m)?, .step(let m)?, .verify(let m)?: return m
+        case nil: return error.localizedDescription
         }
     }
 
-    /// Convert an older build's plain database. Returns true if a plain one is still in use.
-    /// The plain file is replaced only after the encrypted copy is checked to hold every row.
+    // MARK: Encryption
+
+    /// A raw 256-bit key (`x'<64 hex>'`): random, so no passphrase stretching needed.
+    private static func applyKey(_ db: OpaquePointer?, _ keyHex: String) throws {
+        guard sqlite3_exec(db, "PRAGMA key = \"x'\(keyHex.prefix(64))'\"", nil, nil, nil) == SQLITE_OK else { throw DBError.step("setting the key failed") }
+    }
+
+    /// Convert an older build's plain database into an encrypted one. Returns true if
+    /// the plain one is still in use (only by throwing: then nothing was changed).
+    ///
+    /// Plain standard SQL, step by step: a fresh encrypted database is made with the
+    /// current schema, every table is copied in column by column from the plain one
+    /// (attached unencrypted), each table's row count is checked, and only then are the
+    /// files swapped — the old one renamed aside first and deleted last, so a failure
+    /// at any point leaves your messages where they were.
     private static func encryptIfPlain(_ url: URL, _ keyHex: String) throws -> Bool {
         let fm = FileManager.default
         guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber, size.intValue > 0 else { return false }
-        var plain: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &plain, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { sqlite3_close(plain); return false }
-        var closed = false
-        defer { if !closed { sqlite3_close(plain) } }
-        // Readable without any key = still plain; otherwise it's already encrypted.
-        guard isPlainReadable(plain) else { return false }
+        // Readable without any key = plain; otherwise it's already encrypted.
+        var probe: OpaquePointer?
+        let opened = sqlite3_open_v2(url.path, &probe, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK
+        let plain = opened && isPlainReadable(probe)
+        sqlite3_close(probe)
+        guard plain else { return false }
 
-        func run(_ sql: String) throws {
-            var err: UnsafeMutablePointer<CChar>?
-            if sqlite3_exec(plain, sql, nil, nil, &err) != SQLITE_OK {
-                let msg = err.map { String(cString: $0) } ?? "?"
-                sqlite3_free(err)
-                throw DBError.step(msg)
+        let tmp = URL(fileURLWithPath: url.path + ".encrypting")
+        func removeTmp() { for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: tmp.path + s) } }
+        removeTmp()
+        do {
+            let enc = try Database(opening: tmp, key: keyHex)   // fresh, encrypted, current schema
+            try enc.exec("ATTACH DATABASE '\(url.path)' AS plain KEY ''")   // KEY '': attached unencrypted
+            let tables = try enc.query("SELECT name FROM plain.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+                .compactMap { $0.str("name") }
+            for t in tables {
+                let have = Set(try enc.query("PRAGMA main.table_info(\"\(t)\")").compactMap { $0.str("name") })
+                guard !have.isEmpty else { continue }   // a table this build no longer has
+                let cols = try enc.query("PRAGMA plain.table_info(\"\(t)\")").compactMap { $0.str("name") }.filter(have.contains)
+                let list = cols.map { "\"\($0)\"" }.joined(separator: ", ")
+                try enc.exec("INSERT INTO main.\"\(t)\" (\(list)) SELECT \(list) FROM plain.\"\(t)\"")
+                let a = try enc.scalarInt("SELECT COUNT(*) FROM plain.\"\(t)\"") ?? -1
+                let b = try enc.scalarInt("SELECT COUNT(*) FROM main.\"\(t)\"") ?? -2
+                guard a == b else { throw DBError.verify("\(t): \(a) rows, copied \(b)") }
             }
-        }
-        func count(_ sql: String) -> Int64 {
-            var st: OpaquePointer?
-            defer { sqlite3_finalize(st) }
-            guard sqlite3_prepare_v2(plain, sql, -1, &st, nil) == SQLITE_OK, sqlite3_step(st) == SQLITE_ROW else { return -1 }
-            return sqlite3_column_int64(st, 0)
+            // Keep message numbering going where it was.
+            if (try enc.scalarInt("SELECT 1 FROM plain.sqlite_master WHERE name = 'sqlite_sequence'")) != nil {
+                try enc.exec("INSERT OR REPLACE INTO main.sqlite_sequence(name, seq) SELECT name, seq FROM plain.sqlite_sequence")
+            }
+            try enc.exec("DETACH DATABASE plain")
+            _ = try enc.query("PRAGMA wal_checkpoint(TRUNCATE)")   // everything into the main file before moving it
+            enc.close()
+        } catch {
+            removeTmp()
+            throw error
         }
 
-        let tmp = url.path + ".encrypting"
-        for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: tmp + s) }
-        let version = count("PRAGMA user_version")
-        let tables = ["messages", "conversations", "profiles", "reactions", "groups"]
-        let before = tables.map { count("SELECT COUNT(*) FROM \($0)") }
-        try run("ATTACH DATABASE '\(tmp)' AS enc KEY \"x'\(keyHex)'\"")
-        try run("PRAGMA enc.cipher_plaintext_header_size = 32")
-        try run("SELECT sqlcipher_export('enc')")
-        try run("PRAGMA enc.user_version = \(version)")
-        let after = tables.map { count("SELECT COUNT(*) FROM enc.\($0)") }
-        try run("DETACH DATABASE enc")
-        guard before == after else {
-            try? fm.removeItem(atPath: tmp)
-            throw DBError.verify("row counts differ \(before) → \(after)")
+        // Swap: old aside first, new in, old deleted last.
+        let old = url.path + ".plain-old"
+        for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: old + s) }
+        for s in ["", "-wal", "-shm"] where fm.fileExists(atPath: url.path + s) { try fm.moveItem(atPath: url.path + s, toPath: old + s) }
+        do {
+            for s in ["", "-wal", "-shm"] where fm.fileExists(atPath: tmp.path + s) { try fm.moveItem(atPath: tmp.path + s, toPath: url.path + s) }
+        } catch {
+            for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: url.path + s) }
+            for s in ["", "-wal", "-shm"] where fm.fileExists(atPath: old + s) { try? fm.moveItem(atPath: old + s, toPath: url.path + s) }
+            removeTmp()
+            throw error
         }
-        sqlite3_close(plain); closed = true
-        for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: url.path + s) }
-        try fm.moveItem(atPath: tmp, toPath: url.path)
+        for s in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: old + s) }
         return false
     }
 
