@@ -746,7 +746,7 @@ final class Messenger: ObservableObject {
             if timerOf(conv) == s { return }
             try? db.run("INSERT OR IGNORE INTO conversations(id, request) VALUES(?, ?)", conv, isRequest(conv, from))
             try? db.run("UPDATE conversations SET timerSec = ? WHERE id = ?", s, conv)
-            noteSystem(conv, "\(displayName(from)) \(Self.timerSentence(s))")
+            noteSystem(conv, "\(Self.isGroup(conv) ? groupMemberName(from) : displayName(from)) \(Self.timerSentence(s))")
         case "text", "file", "poll":
             onContent(from, p, ts)
         default: break
@@ -1189,6 +1189,16 @@ final class Messenger: ObservableObject {
         if let n = Self.contactNames[phone] { return n }
         if let n = try? db.query("SELECT name FROM profiles WHERE phone = ?", phone).first?.str("name"), !n.isEmpty { return n }
         return PhoneNumbers.pretty(phone)
+    }
+
+    /// Someone in a group, without revealing their number: your contact name for
+    /// them or the name they chose, else "Member" + a short tag that stays the
+    /// same for that person (so members can still be told apart).
+    func groupMemberName(_ phone: String) -> String {
+        if phone == me { return "You" }
+        let name = displayName(phone)
+        if name != PhoneNumbers.pretty(phone) { return name }
+        return "Member " + Primitives.sha256Hex("cellosig-member:" + phone).prefix(4).uppercased()
     }
 
     /// True when the name shown is self-chosen (so the number should be shown under it).

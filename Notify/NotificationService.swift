@@ -51,7 +51,7 @@ final class NotificationService: UNNotificationServiceExtension {
             content.userInfo = ["conv": last.conv]
             if preview && convs.count == 1 {
                 content.title = m.title(last.conv)
-                let line = Messenger.isGroup(last.conv) ? "\(m.displayName(last.sender)): \(last.preview)" : last.preview
+                let line = Messenger.isGroup(last.conv) ? "\(m.groupMemberName(last.sender)): \(last.preview)" : last.preview
                 content.body = arrived.count == 1 ? line : "\(line) (+\(arrived.count - 1) more)"
             } else if preview {
                 content.body = "\(arrived.count) new messages in \(convs.count) chats"

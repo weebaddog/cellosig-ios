@@ -458,7 +458,7 @@ struct MessageRow: View {
                 if msg.outgoing { Spacer(minLength: 50) }
                 VStack(alignment: msg.outgoing ? .trailing : .leading, spacing: 2) {
                     if Messenger.isGroup(conv), !msg.outgoing, let s = msg.sender {
-                        Text(m.displayName(s)).font(.caption2.bold()).foregroundStyle(.secondary)
+                        Text(m.groupMemberName(s)).font(.caption2.bold()).foregroundStyle(.secondary)
                     }
                     bubble
                         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.yellow, lineWidth: highlighted ? 3 : 0))
