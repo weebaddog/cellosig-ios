@@ -356,7 +356,7 @@ final class VoicePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
 /// Stickers you made from your own photos (shrunk to 512 px PNG, kept in the app's protected storage).
 enum MyStickers {
-    private static var dir: URL {
+    static var dir: URL {
         let d = Paths.root.appendingPathComponent("stickers", isDirectory: true)
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true,
                                                  attributes: [.protectionKey: FileProtectionType.complete])

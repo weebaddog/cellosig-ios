@@ -228,7 +228,10 @@ final class Database {
     }
 
     @discardableResult
-    func run(_ sql: String, _ args: Any?...) throws -> Int64 {
+    func run(_ sql: String, _ args: Any?...) throws -> Int64 { try run(sql, args: args) }
+
+    @discardableResult
+    func run(_ sql: String, args: [Any?]) throws -> Int64 {
         let stmt = try prepare(sql, args)
         defer { sqlite3_finalize(stmt) }
         let rc = sqlite3_step(stmt)

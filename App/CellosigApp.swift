@@ -173,6 +173,9 @@ final class AppModel: ObservableObject {
             ExtensionBridge.shared.processInbox()
             ScreenShield.refresh()   // (the window may not have existed yet at launch)
             SecurityMonitor.shared.resume()
+            // Daily chat backups, if they're on (Storage/ChatBackups.swift).
+            ChatBackups.shared.start { [weak self] in self?.messenger }
+            if let m = messenger { ChatBackups.shared.backUpIfDue(m) }
             if let conv = chatOnScreen, let m = messenger, m.activeChat == nil {
                 m.activeChat = conv
                 Task { await m.markRead(conv) }

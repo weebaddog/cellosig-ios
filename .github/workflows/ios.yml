@@ -29,9 +29,16 @@ jobs:
       - name: Swift tests (decrypt Node's, produce our own)
         env:
           CELLOSIG_INTEROP: ${{ runner.temp }}/interop
+          # A chat backup made here, for the Android app's tests to restore (ChatBackupTest).
+          CELLOSIG_BACKUP_OUT: ${{ runner.temp }}/backup
         run: swift test --package-path Core
       - name: Node decrypts what Swift produced
         run: node Interop/interop.mjs verify "$RUNNER_TEMP/interop"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-chat-backup
+          path: ${{ runner.temp }}/backup
+          retention-days: 30
 
   app:
     runs-on: macos-15

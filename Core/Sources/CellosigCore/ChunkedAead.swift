@@ -93,13 +93,13 @@ public enum ChunkedAead {
         return (try AES.GCM.Nonce(data: prefix + idx), idx + Data([final ? 1 : 0]))
     }
 
-    private static func seal(_ key: Data, _ prefix: Data, _ i: Int, _ final: Bool, _ pt: Data) throws -> Data {
+    static func seal(_ key: Data, _ prefix: Data, _ i: Int, _ final: Bool, _ pt: Data) throws -> Data {
         let (nonce, aad) = try nonceAad(prefix, i, final)
         let box = try AES.GCM.seal(pt, using: SymmetricKey(data: key), nonce: nonce, authenticating: aad)
         return box.ciphertext + box.tag
     }
 
-    private static func open(_ key: Data, _ prefix: Data, _ i: Int, _ final: Bool, _ ctAndTag: Data) throws -> Data {
+    static func open(_ key: Data, _ prefix: Data, _ i: Int, _ final: Bool, _ ctAndTag: Data) throws -> Data {
         let (nonce, aad) = try nonceAad(prefix, i, final)
         let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ctAndTag.prefix(ctAndTag.count - tag), tag: ctAndTag.suffix(tag))
         return try AES.GCM.open(box, using: SymmetricKey(data: key), authenticating: aad)

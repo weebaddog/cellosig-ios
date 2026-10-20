@@ -100,6 +100,7 @@ struct SettingsView: View {
                     }
                 }
                 SecuritySettings()
+                BackupSettings()
                 let reminders = m.reminders()
                 if !reminders.isEmpty {
                     Section("Reminders") {
