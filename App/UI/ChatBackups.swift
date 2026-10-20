@@ -102,6 +102,7 @@ final class ChatBackups: ObservableObject {
             d.removeObject(forKey: "backup_error")
             status = "Backed up \(r.messages) messages and \(r.files) files (\(ByteCountFormatter.string(fromByteCount: r.bytes, countStyle: .file)))."
         } catch {
+            ProblemReports.shared.error("chat backup", error)
             let why = "Backup failed: \(error.localizedDescription)"
             d.set(why, forKey: "backup_error")
             status = why
