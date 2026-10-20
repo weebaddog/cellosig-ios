@@ -290,7 +290,7 @@ final class ChatBackups: ObservableObject {
 
     /// Paths moved to this iPhone's folders; what can't work here is marked so.
     nonisolated private static func fix(_ t: BackupRows.Table, _ r: inout [String: Any?], _ info: BackupInfo, _ out: inout Restored) {
-        func name(_ k: String) -> String? { ((r[k] ?? nil) as? String).map { ($0 as NSString).lastPathComponent } }
+        func name(_ k: String) -> String? { ((r[k] ?? nil) as? String).map(BackupRows.fileName) }
         switch t.ios {
         case "messages":
             let n = name("filePath")

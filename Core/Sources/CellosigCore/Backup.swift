@@ -68,11 +68,12 @@ public enum BackupFormat {
         var head = Data()
         while head.count < 29 {
             let d = try read(29 - head.count)
-            if d.isEmpty { throw head.count < magic.count ? Failure.notABackup : Failure.badHeader }
+            if d.isEmpty { break }
             head += d
         }
+        guard head.count >= magic.count, head.prefix(magic.count) == magic else { throw Failure.notABackup }
+        guard head.count == 29 else { throw Failure.badHeader }
         let b = [UInt8](head)
-        guard Data(b[0..<8]) == magic else { throw Failure.notABackup }
         guard b[8] == version else { throw Failure.newer }
         let iterations = Int(b[9]) << 24 | Int(b[10]) << 16 | Int(b[11]) << 8 | Int(b[12])
         // (A crafted file can't make the phone spin for hours, or skip the stretching.)
@@ -438,6 +439,11 @@ public enum BackupRows {
             }
         }
         return r
+    }
+
+    /// The file name at the end of a stored path from either app ("/" or "\" separated).
+    public static func fileName(_ path: String) -> String {
+        String(path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last ?? "")
     }
 
     /// Splits an entry into its non-empty lines.

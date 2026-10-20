@@ -141,7 +141,7 @@ final class BackupTests: XCTestCase {
         XCTAssertEqual(msgs.map { v($0, "body") as? String }, ["hello", "how are you", "group hi"])
         XCTAssertEqual(v(msgs[0], "conv") as? String, "+15550001")
         XCTAssertEqual(v(msgs[0], "outgoing") as? Int64, 0)
-        XCTAssertEqual((v(msgs[0], "filePath") as? String).map { ($0 as NSString).lastPathComponent }, "A1")
+        XCTAssertEqual((v(msgs[0], "filePath") as? String).map(BackupRows.fileName), "A1")
         XCTAssertEqual(v(msgs[0], "fileKey") as? String, "a2V5")
         XCTAssertEqual(v(msgs[0], "fileSize") as? Int64, 16)
         XCTAssertEqual(v(msgs[1], "outgoing") as? Int64, 1)
