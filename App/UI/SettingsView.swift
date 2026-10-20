@@ -99,6 +99,7 @@ struct SettingsView: View {
                         Text("This copy of cellosig was installed without Apple's push service, so it only receives while it's running. On: it keeps running (by playing silence) so messages notify and calls ring — uses more battery. Swiping it away in the app switcher still stops it.")
                     }
                 }
+                CindySettingsSection()
                 SecuritySettings()
                 BackupSettings()
                 ProblemReportSettings()

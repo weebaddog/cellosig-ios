@@ -82,7 +82,9 @@ final class AppModel: ObservableObject {
     /// Hides the app's contents in the app switcher.
     @Published var obscured = false
     /// App lock (Settings): set when the app goes to the background.
-    @Published private(set) var locked = false
+    @Published private(set) var locked = false {
+        didSet { Cindy.shared.hidden = locked }  // no Cindy button over the lock screen
+    }
     private var promptedThisVisit = false
 
     var lockEnabled: Bool {
@@ -104,6 +106,9 @@ final class AppModel: ObservableObject {
             locked = lockEnabled
             start(account)
         }
+        // Cindy (the user's assistant) inside cellosig: off until switched on in Settings
+        Cindy.shared.hidden = locked
+        CindyActions.install()
     }
 
     func start(_ account: Account) {

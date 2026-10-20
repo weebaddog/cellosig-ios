@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.6.1"
+    MARKETING_VERSION: "0.7.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -62,7 +62,12 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIApplicationSupportsIndirectInputEvents: true
         NSPhotoLibraryAddUsageDescription: Save photos from your chats.
-        NSMicrophoneUsageDescription: For calls and voice notes. Audio is end-to-end encrypted.
+        NSMicrophoneUsageDescription: For calls and voice notes (audio is end-to-end encrypted), and to talk to Cindy, your assistant on your PC, when you tap her mic.
+        # Cindy (Settings > Cindy): scanning the PC's pairing code, reaching the PC at home
+        NSCameraUsageDescription: Scan the pairing code Cindy shows on your PC.
+        NSLocalNetworkUsageDescription: Reach Cindy on your PC over your home Wi-Fi.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSFaceIDUsageDescription: Unlock cellosig when App lock is on.
         NSContactsUsageDescription: Show your contacts' names and find which of them use cellosig. Only phone numbers are sent to the relay to check; names stay on your iPhone.
         NSSpeechRecognitionUsageDescription: Turn voice notes into text, on your iPhone only (nothing is sent to Apple).
